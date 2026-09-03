@@ -17,6 +17,7 @@ import { enqueueDueOccurrences } from '../scheduler/enqueue.js';
 import { env } from '../config/env.js';
 import { formatThaiFriendly } from '../lib/time.js';
 import { LOCAL_DATETIME_RE } from '../nlu/schema.js';
+import { getSignedDownloadUrl } from '../vault/storage.js';
 import type { ChatContext } from './context.js';
 
 export async function handlePostbackEvent(
@@ -151,6 +152,34 @@ export async function handlePostbackEvent(
     case 'help': {
       if (replyToken) {
         await reply(replyToken, [textMessage('พิมพ์ "ช่วยเหลือ" ได้เลย นามิจะบอกให้')]);
+      }
+      return;
+    }
+
+    // ── ขอไฟล์/รูปจาก vault กลับมาในแชท ──
+    case 'vault.send': {
+      if (!replyToken) return;
+      const item = await prisma.vaultItem.findFirst({
+        where: { id: action.id, chatId: ctx.chat.id },
+      });
+      if (!item || !item.storageKey) {
+        await reply(replyToken, [textMessage('ไม่เจอไฟล์นี้แล้วนะ อาจถูกลบไปแล้ว')]);
+        return;
+      }
+
+      // ไม่เก็บ URL ถาวรไว้ใน DB — ขอ URL ชั่วคราวตอนที่ต้องใช้จริงเท่านั้น
+      const url = await getSignedDownloadUrl(item.storageKey, 600);
+
+      if (item.kind === 'image') {
+        await reply(replyToken, [
+          { type: 'image', originalContentUrl: url, previewImageUrl: url },
+        ]);
+      } else {
+        // LINE ไม่มี message type สำหรับไฟล์ทั่วไป — ส่งเป็นลิงก์เปิด/ดาวน์โหลดแทน
+        // (ลิงก์หมดอายุใน 10 นาที ต่างจากไฟล์ต้นฉบับใน vault ที่ไม่มีวันหมดอายุ)
+        await reply(replyToken, [
+          textMessage(`${item.title ?? 'ไฟล์'}\nลิงก์เปิด/ดาวน์โหลด (ใช้ได้ 10 นาที):\n${url}`),
+        ]);
       }
       return;
     }

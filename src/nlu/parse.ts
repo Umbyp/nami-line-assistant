@@ -55,21 +55,29 @@ export async function parseUserMessage(
 /**
  * เก็บกวาดผลของโมเดลด้วยกฎที่เรารู้แน่ ก่อนเอาไปตัดสินใจ
  *
- * กรณีที่เจอจริง: "ทุก 30 นาที เตือนพักสายตา"
+ * ambiguousFields ทุกค่า (time/date/title/recurrence/assignee) เป็นเรื่องของ
+ * "การตั้งเตือน" เท่านั้น (ดู AmbiguousFieldSchema) แต่โมเดลบางทีใส่ค่ามาแม้ intent
+ * จะไม่ใช่ create_reminder เลย — เจอจริงกับ "เดี๋ยวส่งให้นะ https://... เอกสารสัญญา"
+ * (intent = save_to_vault) ที่โมเดลใส่ ambiguousFields = ["time"] ทั้งที่ save_to_vault
+ * ไม่มีแนวคิดเรื่องเวลาเลย ถ้าไม่กรองออก นามิจะถามคำถามที่ไม่เกี่ยวข้องกับสิ่งที่ผู้ใช้ขอ
+ *
+ * กรณีที่สอง: "ทุก 30 นาที เตือนพักสายตา" (intent = create_reminder)
  * โมเดลใส่ ambiguousFields = ["time"] ทั้งที่การเตือนแบบ "ทุก N นาที"
  * ไม่ต้องมีเวลาของวันเลย → ถ้าไม่กรองออก นามิจะถามกลับว่า "กี่โมงดี"
  * ซึ่งเป็นคำถามที่ตอบไม่ได้ และผู้ใช้จะตั้งเตือนแบบนี้ไม่ได้เลย
  */
 export function sanitizeNluResult(result: NluResult): NluResult {
-  if (!result.reminder) return result;
+  const original = result.ambiguousFields;
+  let ambiguousFields = original;
 
-  let ambiguousFields = result.ambiguousFields;
-
-  if (result.reminder.everyMinutes) {
-    ambiguousFields = ambiguousFields.filter((f) => f !== 'time');
+  if (result.intent !== 'create_reminder') {
+    // ข้ามการสร้าง array ใหม่ถ้าว่างอยู่แล้ว (เก็บ reference เดิมไว้)
+    if (original.length > 0) ambiguousFields = [];
+  } else if (result.reminder?.everyMinutes && original.includes('time')) {
+    ambiguousFields = original.filter((f) => f !== 'time');
   }
 
-  if (ambiguousFields === result.ambiguousFields) return result;
+  if (ambiguousFields === original) return result;
 
   return {
     ...result,

@@ -23,6 +23,8 @@ export const PostbackSchema = z.discriminatedUnion('a', [
   z.object({ a: z.literal('rm.off'), id: z.string().uuid() }),
   /** ดูรายการเตือนทั้งหมด */
   z.object({ a: z.literal('rm.list') }),
+  /** ขอไฟล์/รูปจาก vault กลับมาในแชท */
+  z.object({ a: z.literal('vault.send'), id: z.string().uuid() }),
   /** ช่วยเหลือ */
   z.object({ a: z.literal('help') }),
 ]);

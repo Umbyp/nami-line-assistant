@@ -77,10 +77,24 @@ describe('sanitizeNluResult', () => {
     expect(out.ambiguousFields).toEqual(['time']);
   });
 
-  it('ไม่มี reminder → คืนของเดิม', () => {
-    const r = result({ intent: 'smalltalk', ambiguousFields: ['time'] });
+  it('ไม่มีอะไรกำกวมเลย → คืน reference เดิม (ไม่สร้าง object ใหม่โดยไม่จำเป็น)', () => {
+    const r = result({ reminder: draft, ambiguousFields: [] });
     expect(sanitizeNluResult(r)).toBe(r);
   });
+
+  // เจอจริง: "เดี๋ยวส่งให้นะ https://... เอกสารสัญญา" (intent = save_to_vault)
+  // โมเดลใส่ ambiguousFields = ["time"] ทั้งที่ save_to_vault ไม่มีแนวคิดเรื่องเวลาเลย
+  // ต้องกรองทิ้งไม่ว่า intent ไหนก็ตามที่ไม่ใช่ create_reminder เพราะ ambiguousFields
+  // ทุกค่า (time/date/title/recurrence/assignee) เป็นเรื่องของการตั้งเตือนเท่านั้น
+  it.each(['save_to_vault', 'search_vault', 'smalltalk', 'help', 'list_reminders', 'cancel_reminder', 'unknown'] as const)(
+    'intent = %s → ตัด ambiguousFields ทิ้งทั้งหมดแม้โมเดลจะใส่มา',
+    (intent) => {
+      const out = sanitizeNluResult(result({ intent, reminder: null, ambiguousFields: ['time'], clarifyQuestion: 'กี่โมงดี' }));
+      expect(out.ambiguousFields).toEqual([]);
+      expect(out.clarifyQuestion).toBeNull();
+      expect(needsClarification(out)).toBe(false);
+    },
+  );
 });
 
 describe('clarificationText', () => {

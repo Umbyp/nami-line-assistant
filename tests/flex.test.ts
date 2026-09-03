@@ -304,3 +304,97 @@ describe('reminderConfirm — แบบซ้ำ', () => {
     expect(all).toContain('ช่วงเวลาเงียบ');
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// P4: vaultSearchResult
+// ─────────────────────────────────────────────────────────────
+import { vaultSearchResult, VAULT_RESULT_MAX } from '../src/line/flex/vaultSearchResult.js';
+import type { VaultSearchHit } from '../src/vault/search.js';
+
+function fakeHit(over: Partial<VaultSearchHit> = {}): VaultSearchHit {
+  return {
+    id: ID,
+    kind: 'text',
+    title: 'ไฟล์สัญญา',
+    contentText: 'เนื้อหาบางส่วน',
+    storageKey: null,
+    mime: null,
+    originalFileName: null,
+    createdAt: NOW,
+    score: 1,
+    ...over,
+  };
+}
+
+describe('vaultSearchResult', () => {
+  it('ไม่มีผลลัพธ์ → ตอบเป็นข้อความบอกตรงๆ ว่าหาไม่เจอ', () => {
+    const m = vaultSearchResult({ hits: [], query: 'ไดโนเสาร์', tz: BKK, now: NOW });
+    expect(m.type).toBe('text');
+    if (m.type === 'text') expect(m.text).toContain('ไดโนเสาร์');
+  });
+
+  it('มีผลลัพธ์ → carousel 1 bubble ต่อ 1 รายการ', () => {
+    const m = vaultSearchResult({
+      hits: [fakeHit(), fakeHit({ id: OID, title: 'อีกไฟล์' })],
+      query: 'สัญญา', tz: BKK, now: NOW,
+    }) as any;
+    expect(m.type).toBe('flex');
+    expect(m.contents.type).toBe('carousel');
+    expect(m.contents.contents).toHaveLength(2);
+  });
+
+  it('ตัดที่ VAULT_RESULT_MAX', () => {
+    const many = Array.from({ length: 15 }, (_, i) => fakeHit({ id: `${i}` }));
+    const m = vaultSearchResult({ hits: many, query: 'x', tz: BKK, now: NOW }) as any;
+    expect(m.contents.contents).toHaveLength(VAULT_RESULT_MAX);
+  });
+
+  it('ลิงก์: ปุ่มเปิดลิงก์เป็น uri action ตรงกับ URL จริง', () => {
+    const m = vaultSearchResult({
+      hits: [fakeHit({ kind: 'link', contentText: 'https://example.com/doc' })],
+      query: 'x', tz: BKK, now: NOW,
+    }) as any;
+    const btn = footerButtons({ contents: m.contents.contents[0] })[0];
+    expect(btn.action.type).toBe('uri');
+    expect(btn.action.uri).toBe('https://example.com/doc');
+  });
+
+  it('ไฟล์ที่มี storageKey: ปุ่มขอไฟล์กลับเป็น postback พา itemId', () => {
+    const m = vaultSearchResult({
+      hits: [fakeHit({ kind: 'file', storageKey: 'vault/x/1.pdf', title: 'เอกสาร.pdf' })],
+      query: 'x', tz: BKK, now: NOW,
+    }) as any;
+    const btn = footerButtons({ contents: m.contents.contents[0] })[0];
+    expect(btn.action.type).toBe('postback');
+    const out = decodePostback(btn.action.data);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect('id' in out.action && out.action.id).toBe(ID);
+  });
+
+  it('รูปที่มี storageKey: ปุ่มบอกว่า "ส่งรูปกลับมา" ไม่ใช่ไฟล์', () => {
+    const m = vaultSearchResult({
+      hits: [fakeHit({ kind: 'image', storageKey: 'vault/x/1.jpg', title: null })],
+      query: 'x', tz: BKK, now: NOW,
+    }) as any;
+    const btn = footerButtons({ contents: m.contents.contents[0] })[0];
+    expect(btn.action.label).toBe('ส่งรูปกลับมา');
+  });
+
+  it('ข้อความ/ลิงก์ไม่มี storageKey เลย และไม่ใช่ลิงก์ → ไม่มี footer', () => {
+    const m = vaultSearchResult({ hits: [fakeHit({ kind: 'text' })], query: 'x', tz: BKK, now: NOW }) as any;
+    expect(m.contents.contents[0].footer).toBeUndefined();
+  });
+
+  it('แสดงตัวอย่างเนื้อหาสำหรับ text/link แต่ไม่แสดงสำหรับ image/file', () => {
+    const textBubble = vaultSearchResult({
+      hits: [fakeHit({ kind: 'text', contentText: 'เนื้อหาลับ' })], query: 'x', tz: BKK, now: NOW,
+    }) as any;
+    expect(texts(textBubble.contents.contents[0]).join(' ')).toContain('เนื้อหาลับ');
+
+    const imgBubble = vaultSearchResult({
+      hits: [fakeHit({ kind: 'image', contentText: 'ไม่ควรโชว์', storageKey: 'vault/x/1.jpg' })],
+      query: 'x', tz: BKK, now: NOW,
+    }) as any;
+    expect(texts(imgBubble.contents.contents[0]).join(' ')).not.toContain('ไม่ควรโชว์');
+  });
+});
