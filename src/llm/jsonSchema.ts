@@ -11,11 +11,37 @@ import type { ZodTypeAny } from 'zod';
  * แล้วให้โมเดลส่ง null มา ไม่ใช่ละไว้
  *
  * $refStrategy: 'none' เพื่อ inline ทุกอย่าง — strict mode ไม่รองรับ $ref/$defs
+ *
+ * และ strict mode ไม่รองรับ keyword ตรวจค่า (pattern, minLength, minimum, ...)
+ * ถ้าส่งไปจะถูกปฏิเสธทั้ง request → เราถอดออกก่อน
+ * ข้อจำกัดพวกนั้นยังถูกบังคับอยู่ที่ zod ตอน validate ผลลัพธ์
+ * ดังนั้น schema ที่มีเงื่อนไขสำคัญควรเขียนบอกไว้ใน .describe() ให้โมเดลรู้ด้วย
  */
 export function toStrictJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
   const raw = zodToJsonSchema(schema, { $refStrategy: 'none', target: 'jsonSchema7' });
   return enforceStrict(raw as Record<string, unknown>) as Record<string, unknown>;
 }
+
+/**
+ * keyword ที่ strict mode ปฏิเสธ — zod ยังบังคับให้เราตอน validate อยู่ดี
+ * จึงถอดออกจาก JSON Schema ได้อย่างปลอดภัย
+ */
+const UNSUPPORTED_KEYWORDS = [
+  '$schema',
+  'pattern',
+  'minLength',
+  'maxLength',
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+  'minItems',
+  'maxItems',
+  'uniqueItems',
+  'format',
+  'default',
+] as const;
 
 function enforceStrict(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(enforceStrict);
@@ -23,8 +49,7 @@ function enforceStrict(node: unknown): unknown {
 
   const obj = { ...(node as Record<string, unknown>) };
 
-  // zod-to-json-schema ใส่ $schema ไว้ที่ root — strict mode ไม่ต้องการ
-  delete obj['$schema'];
+  for (const k of UNSUPPORTED_KEYWORDS) delete obj[k];
 
   const props = obj['properties'];
   if (props && typeof props === 'object' && !Array.isArray(props)) {

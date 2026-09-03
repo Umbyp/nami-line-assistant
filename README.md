@@ -13,8 +13,8 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 |-------|--------|-------|
 | **P1** | webhook + signature verify + echo + docker compose | ✅ เสร็จ |
 | **P1.5** | ชั้น LLM (OpenRouter) + บันทึกต้นทุน USD จริง | ✅ เสร็จ |
-| P2 | NLU + ตั้งเตือนรายครั้ง + Flex ยืนยัน | ⬜ |
-| P3 | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ⬜ |
+| **P2** | NLU + ตั้งเตือนรายครั้ง + Flex ยืนยัน | ✅ เสร็จ |
+| P3 | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ⬜ **ยังไม่ยิงเตือนจนถึง P3** |
 | P4 | vault เก็บ + ค้นหา | ⬜ |
 | P5 | โหมดกลุ่ม + mention | ⬜ |
 | P6 | rich menu + ขัดเกลาข้อความ + test | ⬜ |
@@ -197,6 +197,59 @@ curl -s 'localhost:3100/debug/llm-config?probe=1' | jq  # ยิงจริง 
 
 ---
 
+## NLU: ทำไมต้องมีตัวตรวจทานเป็นโค้ด
+
+โมเดลอ่านภาษาไทยเก่ง แต่**พลาดตรงส่วนที่คำนวณได้แน่นอน** และพลาดซ้ำเดิมทุกรอบ (ทดสอบ 3 รอบ ผลเหมือนกันหมด):
+
+| ผู้ใช้พิมพ์ | โมเดลให้ | ที่ถูก |
+|---|---|---|
+| "เตือนวันศุกร์ 2 ทุ่ม ดูหนังกับแฟน" | **เสาร์ 5 ก.ย. 19:00** ❌ | ศุกร์ 4 ก.ย. 20:00 |
+| "เตือน 3 ทุ่มครึ่ง อ่านหนังสือ" | พฤหัส 21:30 ✅ | ถูกอยู่แล้ว |
+| "เตือนวันจันทร์ 5 โมงเย็น ส่งของ" | `FREQ=WEEKLY;BYDAY=MO` ❌ | เตือนครั้งเดียว |
+
+prompt แก้ไม่หาย เพราะเป็นการคำนวณ ไม่ใช่ความเข้าใจภาษา
+แต่คำบอกเวลาไทยเป็น **เซตปิด** จึงเขียนโค้ดคำนวณเองได้ → `src/nlu/thaiTime.ts`
+
+โครงสร้างจึงเป็น **"ให้โมเดลทำภาษา เราทำเลข"**:
+
+```
+ข้อความไทย
+  → LLM        จับเจตนา, แยก title ออกจากวลีบอกเวลา, บอกว่าอะไรกำกวม
+  → resolveDueAt  แปลงเป็น UTC + กฎ "เวลาผ่านไปแล้วทำยังไง"   (deterministic)
+  → verifyDueAt   ตรวจทาน "2 ทุ่ม"/"วันศุกร์" ทับผลโมเดลถ้าไม่ตรง  (deterministic)
+  → บันทึก
+```
+
+`verifyDueAt` แก้เฉพาะเมื่อมั่นใจ และ **log ทุกครั้งที่แก้** เพื่อวัดว่าโมเดลพลาดบ่อยแค่ไหน
+จากการทดสอบจริง 7 ข้อความ มันแก้ 2 ครั้ง (~29%)
+
+รองรับคำบอกเวลาไทย: `18.00` `18:30 น.` `20 นาฬิกา` · `ตี 1-5` · `N โมงเช้า` ·
+`เที่ยง` `เที่ยงคืน` · `บ่ายโมง` `บ่าย N` · `N โมงเย็น` · `N ทุ่ม` · `ครึ่ง` ·
+เลขไทยเป็นคำ (`สองทุ่ม`) และเลขไทย (`๒ ทุ่ม`)
+
+### กฎ "ซ้ำ" ต้องมีตัวบอกความซ้ำ
+
+ภาษาไทยต่างกันชัดเจน แต่โมเดลแยกไม่ออก:
+
+- `"ทุกวันจันทร์ 8 โมง"` → เตือนซ้ำ
+- `"วันจันทร์ 8 โมง"` → **เตือนครั้งเดียว** (จันทร์ที่จะถึง)
+
+`looksRecurring()` บังคับกฎนี้ในโค้ด ถ้าโมเดลบอกว่าซ้ำแต่ข้อความไม่มี `ทุก`/`ประจำ`/`ซ้ำ`
+หรือช่วงวันแบบ `จันทร์-ศุกร์` → ถือว่าครั้งเดียว
+(ถ้าไม่มีกฎนี้ ผู้ใช้จะถูกปฏิเสธทั้งที่ตั้งเตือนครั้งเดียวได้)
+
+### ถามกลับเมื่อไหร่
+
+ใช้ **2 สัญญาณ** ไม่ใช่แค่ `confidence`:
+
+1. `ambiguousFields` ที่โมเดลระบุมาตรงๆ — สัญญาณหลัก
+2. `confidence < NLU_CONFIDENCE_THRESHOLD` — สัญญาณสำรอง
+
+เพราะ `confidence` ไม่เสถียร: ข้อความกำกวมเดียวกัน (`"เตือนตอนเย็นๆ นะ"`) รอบหนึ่งได้ 0.5 อีกรอบได้ 0.7
+ถ้าพึ่งตัวเลขเดียว จะปล่อยของกำกวมผ่านแล้วเดาเวลาให้ผู้ใช้เอง
+
+---
+
 ## ทดสอบโดยไม่ต้องมี LINE จริง
 
 `scripts/send-webhook.ts` ยิง webhook ปลอมเข้าเครื่องตัวเอง **พร้อมเซ็น `X-Line-Signature` ให้ถูกต้อง**
@@ -209,6 +262,16 @@ npm run webhook:send -- --group "กินข้าวกันยังพว�
 npm run webhook:send -- --follow                              # event เพิ่มเพื่อน
 npm run webhook:send -- --bad-signature "ทดสอบ"               # ต้องได้ 401
 ```
+
+### ทดสอบ NLU กับโมเดลจริง
+
+```bash
+npm run llm:bench                                        # 6 เคสมาตรฐาน
+npm run nlu:probe -- "เตือนวันศุกร์ 2 ทุ่ม ดูหนัง"          # ยิงซ้ำ 3 รอบ ดูว่าผลนิ่งไหม
+```
+
+`nlu:probe` ยิงข้อความเดียวกัน 3 รอบ ใช้แยกว่าโมเดล "พลาดเป็นระบบ" (ผลเหมือนกันทุกรอบ →
+แก้ด้วยโค้ดใน `thaiTime.ts`) หรือ "ไม่นิ่ง" (ผลต่างกัน → แก้ด้วย prompt/threshold)
 
 `replyToken` เป็นของปลอม → LINE จะปฏิเสธการ reply (401) เป็นเรื่องปกติ
 ให้ดูใน log ของ worker ว่าประมวลผล event ไปถึงขั้นไหน
@@ -249,6 +312,16 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/groupGate.test.ts` | กติกา "ในกลุ่มตอบเฉพาะเมื่อถูกเรียก", ตัด mention หลายตำแหน่งโดย index ไม่เพี้ยน, ไม่ตอบเมื่อ mention คนอื่น |
 | `tests/webhook.test.ts` | 401 เมื่อ signature ผิด/ไม่มี, 200 + enqueue เมื่อถูก, `jobId = webhookEventId`, 500 เมื่อ enqueue พังเพื่อให้ LINE retry |
 | `tests/llm.test.ts` | zod ไม่ผ่าน → `ok:false` ไม่เดาค่า, repair pass 1 ครั้ง, `api_error` ไม่ repair, บันทึกต้นทุนแม้ผลลัพธ์พัง, `toStrictJsonSchema` บังคับ `additionalProperties:false` + `required` ทุก key |
+| `tests/thaiTime.test.ts` | คำบอกเวลาไทยทุกรูปแบบ (ตี/โมงเช้า/บ่าย/โมงเย็น/ทุ่ม/ครึ่ง/เลขไทย), เคสที่โมเดลพลาดจริง, `นับ "N โมง" ที่กำกวมแล้วไม่เดา`, `วันศุกร์หน้า` vs `วันศุกร์นี้`, กฎ `looksRecurring` |
+| `tests/resolveTime.test.ts` | แปลงเวลาไทย → UTC, เวลาผ่านไปแล้วเลื่อนวัน/ถามกลับ, ข้ามสิ้นเดือน/สิ้นปี, 31 ก.ย. และ 29 ก.พ. ที่ไม่มีจริง, tz ที่มี DST |
+| `tests/nlu.test.ts` | เกณฑ์ถามกลับ (2 สัญญาณ), ข้อความถามกลับ, prompt มีกฎเวลาไทยครบ, JSON Schema ที่ส่งให้โมเดลไม่มี keyword ที่ strict mode ปฏิเสธ |
+| `tests/postback.test.ts` | round-trip ทุก action, ปฏิเสธ uuid ปลอม/action ที่ไม่รู้จัก/data เกิน 300 ตัว |
+| `tests/flex.test.ts` | ปุ่มถูกชนิด (datetimepicker/postback), `min` กันเลือกอดีต, บอกผู้ใช้เมื่อเลื่อนวันให้, ข้อความ mention ที่ยังไม่รู้ userId |
+| `tests/reminders.test.ts` | **integration กับ Postgres จริง** — ทรานแซกชัน, `unique(reminderId, fireAtUtc)` กันยิงซ้ำ, ปฏิเสธการยกเลิก/แก้ของแชทอื่น, `onDelete: Restrict`/`Cascade` |
+
+> `tests/reminders.test.ts` ต้องมี Postgres รันอยู่ (`docker compose up -d postgres`)
+> `tests/globalSetup.ts` จะรัน migration ลง DB ชื่อ `nami_test` ให้เอง
+> ถ้าต่อ DB ไม่ได้ เทสต์ชุดนั้นจะข้ามตัวเองแทนที่จะทำทั้งชุดพัง
 
 ### ตรวจโครงสร้าง DB ที่ Prisma จัดการแทนไม่ได้
 
@@ -273,6 +346,10 @@ src/
 │  ├─ redis.ts          ioredis (maxRetriesPerRequest: null ตามที่ BullMQ ต้องการ)
 │  └─ time.ts           เวลาไทยทั้งหมดอยู่ที่นี่ — quiet hours, format, แปลง local↔UTC
 ├─ line/
+│  ├─ postback.ts       encode/decode postback + zod (data จากเครื่องผู้ใช้ เชื่อไม่ได้)
+│  ├─ flex/
+│  │  ├─ theme.ts       สี/ขนาดกลาง
+│  │  └─ reminderConfirm.ts
 │  ├─ signature.ts      verify X-Line-Signature (timing-safe)
 │  ├─ client.ts         MessagingApiClient + BlobClient
 │  ├─ reply.ts          reply (ฟรี)
@@ -290,13 +367,21 @@ src/
 ├─ queue/queues.ts      BullMQ: events / reminder-fire / scheduler
 ├─ handlers/
 │  ├─ index.ts          กระจาย event ตามชนิด
+│  ├─ message.ts        ข้อความ → NLU → ตรวจทาน → บันทึก → Flex
+│  ├─ postback.ts       ปุ่มทั้งหมด
 │  ├─ context.ts        upsert chat/user/group_member — จำ userId ทุกคนที่พูดในกลุ่ม
 │  ├─ groupGate.ts      กติกา "ตอบเฉพาะเมื่อถูกเรียก" ในกลุ่ม
 │  └─ lifecycle.ts      unfollow/leave → ปิดแชท หยุดยิง push
 ├─ worker/
 │  ├─ index.ts          เข้า worker process
 │  └─ eventWorker.ts    ประมวลผล event + กันซ้ำ 2 ชั้น
-├─ nlu/                 (P2)
+├─ nlu/
+│  ├─ schema.ts         zod schema ของผล NLU (แหล่งความจริงเดียว)
+│  ├─ prompt.ts         system prompt + กฎเวลาไทย
+│  ├─ parse.ts          เรียก NLU + เกณฑ์ถามกลับ
+│  ├─ resolveTime.ts    dueAtLocal → UTC + กฎเวลาที่ผ่านไปแล้ว
+│  └─ thaiTime.ts       ตัวตรวจทานคำบอกเวลาไทย (deterministic)
+├─ reminders/service.ts CRUD การเตือน (ทรานแซกชัน + เช็คว่าเป็นของแชทนั้น)
 ├─ scheduler/           (P3)
 └─ vault/               (P4)
 ```
@@ -368,12 +453,8 @@ npm run db:verify
 ทุกครั้งที่เรียก LLM ต้อง validate output ด้วย zod และมี fallback ถ้า parse ไม่ได้ —
 **ถามผู้ใช้กลับ อย่าเดา** บังคับใช้ผ่าน `completeStructured()` แล้ว
 
-**สิ่งที่ต้องแก้ใน P2 (พบจาก bench):** `confidence` จากโมเดล **ไม่เสถียร**
-ข้อความกำกวมเดียวกัน (`"เตือนตอนเย็นๆ นะ"`) รอบหนึ่งได้ 0.5 อีกรอบได้ 0.7
-→ พึ่ง `NLU_CONFIDENCE_THRESHOLD` ตัวเดียวไม่พอ
-schema ของ P2 ต้องมี field `ambiguousFields: string[]` ที่บังคับให้โมเดลระบุออกมาตรงๆ
-ว่าอะไรกำกวม แล้วถามกลับตามนั้น ไม่ใช่ตัดสินจากตัวเลข confidence อย่างเดียว
-(bench ยังพบว่ามันตั้ง `title` เป็น `"เย็นๆ"` ซึ่งเอาวลีบอกเวลามาเป็นชื่อเรื่อง)
+ดูรายละเอียดว่าทำไมต้องมีตัวตรวจทานเป็นโค้ดที่หัวข้อ
+[NLU: ทำไมต้องมีตัวตรวจทานเป็นโค้ด](#nlu-ทำไมต้องมีตัวตรวจทานเป็นโค้ด)
 
 ---
 
@@ -393,3 +474,6 @@ schema ของ P2 ต้องมี field `ambiguousFields: string[]` ที�
 | embedding พังตอน insert | `EMBEDDING_DIMENSIONS` ไม่ตรงกับ `vector(N)` ใน DB — รัน `npm run db:verify` |
 | ต่อ Supabase ไม่ได้จากเน็ตองค์กร | `db.<ref>.supabase.co` เป็น IPv6-only และเน็ตองค์กรมักบล็อก outbound 5432/6543 — dev ให้ใช้ Postgres ใน docker แล้วต่อ Supabase ตอน deploy |
 | `.env` sourcing พังใน shell | ค่าที่มีช่องว่างต้องครอบ quote เช่น `OPENROUTER_APP_NAME="Nami LINE Assistant"` |
+| ตั้งเตือนแล้วแต่ไม่มีอะไรเตือน | ปกติ — scheduler มาใน P3 ตอนนี้บันทึกกับยืนยันได้แต่ยังไม่ยิง |
+| `schema_mismatch: dueAtLocal` | โมเดลเติมวินาทีมาให้เอง — `LOCAL_DATETIME_LOOSE_RE` รับแล้วตัดทิ้ง |
+| นามิตอบว่า "เตือนซ้ำยังทำไม่ได้" ทั้งที่ตั้งครั้งเดียว | ข้อความมีคำที่ `looksRecurring()` จับว่าเป็นการซ้ำ ดูกฎในหัวข้อ NLU |
