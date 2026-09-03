@@ -1,5 +1,6 @@
 import { DateTime } from 'luxon';
 import { env } from '../config/env.js';
+import { atLocalMinute } from '../lib/time.js';
 
 /**
  * ─────────────────────────────────────────────────────────────
@@ -248,7 +249,8 @@ export function verifyDueAt(input: VerifyInput): VerifyResult {
   const now = input.now ?? new Date();
   const corrections: string[] = [];
 
-  let local = DateTime.fromJSDate(input.dueAtUtc, { zone: tz });
+  // ประกาศชนิดตรงๆ เพราะ luxon แยก DateTime<true>/<false> ตามความ valid
+  let local: DateTime = DateTime.fromJSDate(input.dueAtUtc, { zone: tz });
   const nowLocal = DateTime.fromJSDate(now, { zone: tz });
 
   // ── 1. แก้ "วัน" ก่อน (ต้องมาก่อนเวลา เพราะการเลื่อนวันไม่กระทบเวลา) ──
@@ -271,7 +273,7 @@ export function verifyDueAt(input: VerifyInput): VerifyResult {
       corrections.push(
         `เวลา: โมเดลให้ ${fmt(modelMinute)} แต่ "${clock.matched}" = ${fmt(clock.minute)}`,
       );
-      local = local.startOf('day').plus({ minutes: clock.minute });
+      local = atLocalMinute(local, clock.minute);
     }
   }
 
@@ -319,4 +321,67 @@ function fmt(minute: number): string {
   const h = Math.floor(minute / 60) % 24;
   const m = minute % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+
+export interface FireMinuteInput {
+  /** ข้อความต้นฉบับของผู้ใช้ */
+  text: string;
+  /** ค่าที่โมเดลส่งมา (เชื่อไม่ได้) */
+  modelMinute?: number | null;
+  /** dueAtLocal ที่โมเดลส่งมา — โมเดลมักใส่เวลาถูกในนี้แม้ minute จะผิด */
+  modelDueAtLocal?: string | null;
+}
+
+export interface FireMinuteResult {
+  minute: number | null;
+  source: 'text' | 'due_at_local' | 'model' | 'none';
+  /** ค่าที่โมเดลให้มาต่างจากที่เราคำนวณได้ */
+  corrected: boolean;
+}
+
+/**
+ * หาเวลาที่จะเตือนในแต่ละรอบ (นาทีจากเที่ยงคืน) ของการเตือนซ้ำ
+ *
+ * ทำไมไม่เชื่อโมเดล: มันส่ง "ชั่วโมง" มาแทน "นาทีจากเที่ยงคืน" ซ้ำทุกรอบ
+ *   "ทุกวันจันทร์-ศุกร์ 8 โมง"  → ส่ง 8    (ที่ถูก 480)
+ *   "ทุกวัน 23.00"             → ส่ง 23   (ที่ถูก 1380)
+ * ทำให้การเตือนไปตกตอน 00:08 และ 00:23 ซึ่งอยู่ในช่วงเวลาเงียบ
+ * แล้วถูกเลื่อนไป 07:00 — ผู้ใช้จะไม่เข้าใจเลยว่าทำไม
+ *
+ * ลำดับความน่าเชื่อถือ:
+ *   1. extractClockMinute จากข้อความ — คำนวณเอง แม่นสุด
+ *   2. เวลาใน dueAtLocal ของโมเดล — โมเดลใส่ถูกแม้ minute จะผิด
+ *   3. ค่าที่โมเดลให้มาตรงๆ — ทางเลือกสุดท้าย
+ */
+export function resolveFireMinute(input: FireMinuteInput): FireMinuteResult {
+  const fromText = extractClockMinute(input.text);
+  if (fromText) {
+    return {
+      minute: fromText.minute,
+      source: 'text',
+      corrected: input.modelMinute != null && input.modelMinute !== fromText.minute,
+    };
+  }
+
+  // โมเดลกรอกเวลาใน dueAtLocal ถูกแม้ fireAtMinuteLocal จะผิด — ใช้อันนั้นแทน
+  if (input.modelDueAtLocal) {
+    const m = /T(\d{2}):(\d{2})/.exec(input.modelDueAtLocal);
+    if (m) {
+      const minute = Number(m[1]) * 60 + Number(m[2]);
+      if (minute >= 0 && minute <= 1439) {
+        return {
+          minute,
+          source: 'due_at_local',
+          corrected: input.modelMinute != null && input.modelMinute !== minute,
+        };
+      }
+    }
+  }
+
+  if (input.modelMinute != null && input.modelMinute >= 0 && input.modelMinute <= 1439) {
+    return { minute: input.modelMinute, source: 'model', corrected: false };
+  }
+
+  return { minute: null, source: 'none', corrected: false };
 }

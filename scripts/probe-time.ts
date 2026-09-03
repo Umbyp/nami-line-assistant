@@ -5,7 +5,7 @@ import { DateTime } from 'luxon';
 
 const NOW = DateTime.fromISO('2026-09-03T12:00', { zone: 'Asia/Bangkok' }).toUTC().toJSDate();
 const cases = process.argv.slice(2);
-const ROUNDS = 3;
+const ROUNDS = 2;
 
 for (const text of cases) {
   console.log(`\n▸ ${text}`);
@@ -17,7 +17,8 @@ for (const text of cases) {
     const r = out.result.reminder;
     console.log(
       `   รอบ ${i + 1}: kind=${r?.kind} due=${r?.dueAtLocal} rrule=${r?.rrule} ` +
-      `title=${JSON.stringify(r?.title)} explicit=${r?.dateWasExplicit} amb=[${out.result.ambiguousFields}]`,
+      `every=${r?.everyMinutes} minLocal=${r?.fireAtMinuteLocal} ` +
+      `title=${JSON.stringify(r?.title)} amb=[${out.result.ambiguousFields}]`,
     );
   }
 }

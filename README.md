@@ -14,7 +14,7 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 | **P1** | webhook + signature verify + echo + docker compose | ✅ เสร็จ |
 | **P1.5** | ชั้น LLM (OpenRouter) + บันทึกต้นทุน USD จริง | ✅ เสร็จ |
 | **P2** | NLU + ตั้งเตือนรายครั้ง + Flex ยืนยัน | ✅ เสร็จ |
-| P3 | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ⬜ **ยังไม่ยิงเตือนจนถึง P3** |
+| **P3** | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ✅ เสร็จ |
 | P4 | vault เก็บ + ค้นหา | ⬜ |
 | P5 | โหมดกลุ่ม + mention | ⬜ |
 | P6 | rich menu + ขัดเกลาข้อความ + test | ⬜ |
@@ -197,6 +197,75 @@ curl -s 'localhost:3100/debug/llm-config?probe=1' | jq  # ยิงจริง 
 
 ---
 
+## Scheduler: ทน restart และไม่ยิงซ้ำ
+
+### สองทางเข้าหา occurrence เดียวกัน
+
+```
+occurrence (pending)
+   ├─ delayed job ของ BullMQ   แม่นระดับวินาที ไม่ต้องโพลล์ แต่หายได้
+   └─ cron sweeper ทุก 1 นาที   ช้ากว่า แต่ไม่หาย
+        ↓ ทั้งสองใช้ jobId = occurrence id เดียวกัน
+   fireOccurrence()  claim ได้แค่ตัวเดียว
+```
+
+BullMQ ปฏิเสธ job ที่ `jobId` ซ้ำเงียบๆ จึงไม่มีทางได้สอง job ต่อ occurrence
+และแม้จะหลุดมาสองตัว `fireOccurrence()` ก็ claim ได้แค่ตัวเดียว
+
+### ลำดับที่ทำให้ไม่ยิงซ้ำและไม่ยิงหาย
+
+```
+pending  ──claim──▶  sending  ──push ok──▶  sent
+                        │
+                        ├── push พลาด (ยัง retry ได้) ──▶ pending
+                        ├── push พลาด (ครบ 3 ครั้ง)   ──▶ failed
+                        └── process ตาย → sweeper พากลับ ──▶ pending
+```
+
+การ claim คือ `UPDATE ... WHERE id = ? AND status = 'pending'` แบบ atomic
+Postgres ล็อกแถวให้เองระหว่าง UPDATE ถ้าได้ 0 แถว = มีคนอื่นจับไปแล้ว → ออกเงียบๆ
+
+**ทำไมไม่ push ก่อนแล้วค่อย mark sent:** ถ้าตายระหว่างนั้นจะยิงซ้ำ เสียเงินและกวนผู้ใช้
+**ทำไมไม่ mark sent ก่อน push:** ถ้าตายระหว่างนั้นการเตือนหายเงียบ กู้ไม่ได้
+สถานะ `sending` คือคำตอบ — `recoverStuckOccurrences()` พาแถวที่ค้างเกิน 5 นาทีกลับมา
+
+ยืนยันด้วยเทสต์: ยิง occurrence เดียวกันพร้อมกัน 5 ตัว → `push` ถูกเรียก **ครั้งเดียว**
+
+### เวลาซ้ำที่ไม่เพี้ยนสะสม
+
+occurrence เก็บเวลา 2 ค่า:
+
+| คอลัมน์ | คืออะไร |
+|---|---|
+| `fire_at_utc` | เวลาที่ยิงจริง (ถูกเลื่อนแล้วถ้าตกในช่วงเงียบ) |
+| `canonical_fire_at_utc` | เวลาตามตารางเดิมก่อนเลื่อน |
+
+รอบถัดไปคำนวณจาก **canonical** ไม่ใช่เวลาที่ยิงจริง
+ถ้าไม่แยกเก็บ: เตือนทุกวัน 23:00 ที่ถูกเลื่อนไป 07:00 จะทำให้รอบถัดไปนับจาก 07:00
+แล้วตารางค่อยๆ ไหลออกจากที่ผู้ใช้ตั้งไว้ทุกวัน
+
+### rrule กับ timezone
+
+`rrule` ทำงานบน UTC/floating time แต่การเตือนผูกกับ **เวลาท้องถิ่นของผู้ใช้**
+ถ้าคำนวณบน UTC ตรงๆ จะเพี้ยนทันทีที่ผู้ใช้อยู่ tz ที่มี DST จึงใช้ floating date trick:
+
+1. ใช้ rrule หาแค่ "วันไหน" โดยมองวันเป็น UTC midnight (ไร้ timezone)
+2. ได้วันแล้วค่อยแปะเวลาในโซนของผู้ใช้ด้วย `atLocalMinute()`
+3. แปลงเป็น UTC ตอนท้ายสุด
+
+**ห้ามใช้ `startOf('day').plus({ minutes })`** — `plus` บวก *ระยะเวลาจริง*
+วันที่มี DST มี 23 หรือ 25 ชั่วโมง ทำให้ผลเพี้ยนไป 1 ชั่วโมง
+(เจอจริง: 1 พ.ย. 2026 ที่นิวยอร์ก `00:00 + 480 นาที` = **07:00** ไม่ใช่ 08:00)
+`atLocalMinute()` ใช้ `set()` ที่ยึดหน้าปัดนาฬิกา จึงได้ 08:00 เสมอ
+
+### สิ่งที่ทดสอบไว้
+
+รายเดือนวันที่ 31 → **ข้าม** เดือนที่ไม่มีวันที่ 31 (ไม่ใช่เลื่อนไปวันที่ 1) ·
+29 ก.พ. → เจอแค่ปีอธิกสุรทิน · `BYMONTHDAY=-1` → วันสุดท้ายจริงของแต่ละเดือน ·
+DST ทั้ง spring forward และ fall back · quiet hours ที่ข้ามเที่ยงคืน
+
+---
+
 ## NLU: ทำไมต้องมีตัวตรวจทานเป็นโค้ด
 
 โมเดลอ่านภาษาไทยเก่ง แต่**พลาดตรงส่วนที่คำนวณได้แน่นอน** และพลาดซ้ำเดิมทุกรอบ (ทดสอบ 3 รอบ ผลเหมือนกันหมด):
@@ -206,6 +275,8 @@ curl -s 'localhost:3100/debug/llm-config?probe=1' | jq  # ยิงจริง 
 | "เตือนวันศุกร์ 2 ทุ่ม ดูหนังกับแฟน" | **เสาร์ 5 ก.ย. 19:00** ❌ | ศุกร์ 4 ก.ย. 20:00 |
 | "เตือน 3 ทุ่มครึ่ง อ่านหนังสือ" | พฤหัส 21:30 ✅ | ถูกอยู่แล้ว |
 | "เตือนวันจันทร์ 5 โมงเย็น ส่งของ" | `FREQ=WEEKLY;BYDAY=MO` ❌ | เตือนครั้งเดียว |
+| "ทุกวันจันทร์-ศุกร์ 8 โมง" | `fireAtMinuteLocal = 8` ❌ | 480 |
+| "ทุกวัน 23.00 เตือนกินยา" | `fireAtMinuteLocal = 23` ❌ | 1380 |
 
 prompt แก้ไม่หาย เพราะเป็นการคำนวณ ไม่ใช่ความเข้าใจภาษา
 แต่คำบอกเวลาไทยเป็น **เซตปิด** จึงเขียนโค้ดคำนวณเองได้ → `src/nlu/thaiTime.ts`
@@ -223,6 +294,11 @@ prompt แก้ไม่หาย เพราะเป็นการคำน
 `verifyDueAt` แก้เฉพาะเมื่อมั่นใจ และ **log ทุกครั้งที่แก้** เพื่อวัดว่าโมเดลพลาดบ่อยแค่ไหน
 จากการทดสอบจริง 7 ข้อความ มันแก้ 2 ครั้ง (~29%)
 
+การเตือนซ้ำก็ใช้หลักเดียวกัน: `resolveFireMinute()` คำนวณ `fireAtMinuteLocal` เอง
+เพราะโมเดลส่ง **ชั่วโมง** มาแทน **นาทีจากเที่ยงคืน** ซ้ำทุกรอบ
+(`"8 โมง"` → `8` ไม่ใช่ `480` ทำให้การเตือนไปตกตอน 00:08 แล้วถูกเลื่อนเพราะช่วงเวลาเงียบ
+ผู้ใช้จะไม่เข้าใจเลยว่าทำไม)
+
 รองรับคำบอกเวลาไทย: `18.00` `18:30 น.` `20 นาฬิกา` · `ตี 1-5` · `N โมงเช้า` ·
 `เที่ยง` `เที่ยงคืน` · `บ่ายโมง` `บ่าย N` · `N โมงเย็น` · `N ทุ่ม` · `ครึ่ง` ·
 เลขไทยเป็นคำ (`สองทุ่ม`) และเลขไทย (`๒ ทุ่ม`)
@@ -237,6 +313,10 @@ prompt แก้ไม่หาย เพราะเป็นการคำน
 `looksRecurring()` บังคับกฎนี้ในโค้ด ถ้าโมเดลบอกว่าซ้ำแต่ข้อความไม่มี `ทุก`/`ประจำ`/`ซ้ำ`
 หรือช่วงวันแบบ `จันทร์-ศุกร์` → ถือว่าครั้งเดียว
 (ถ้าไม่มีกฎนี้ ผู้ใช้จะถูกปฏิเสธทั้งที่ตั้งเตือนครั้งเดียวได้)
+
+`sanitizeNluResult()` เก็บกวาดอีกกรณี: `"ทุก 30 นาที เตือนพักสายตา"`
+โมเดลใส่ `ambiguousFields = ["time"]` ทั้งที่การเตือนแบบทุก N นาทีไม่มีเวลาของวันให้ระบุ
+ถ้าไม่กรองออก นามิจะถามว่า "กี่โมงดี" ซึ่งเป็นคำถามที่ตอบไม่ได้
 
 ### ถามกลับเมื่อไหร่
 
@@ -318,6 +398,8 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/postback.test.ts` | round-trip ทุก action, ปฏิเสธ uuid ปลอม/action ที่ไม่รู้จัก/data เกิน 300 ตัว |
 | `tests/flex.test.ts` | ปุ่มถูกชนิด (datetimepicker/postback), `min` กันเลือกอดีต, บอกผู้ใช้เมื่อเลื่อนวันให้, ข้อความ mention ที่ยังไม่รู้ userId |
 | `tests/reminders.test.ts` | **integration กับ Postgres จริง** — ทรานแซกชัน, `unique(reminderId, fireAtUtc)` กันยิงซ้ำ, ปฏิเสธการยกเลิก/แก้ของแชทอื่น, `onDelete: Restrict`/`Cascade` |
+| `tests/nextOccurrence.test.ts` | รายวัน/สัปดาห์/เดือน/ปี/ทุก N นาที, **วันที่ 31 ต้องข้ามเดือนที่ไม่มี**, 29 ก.พ. อธิกสุรทิน, `BYMONTHDAY=-1`, **DST ทั้งสองทิศ**, quiet hours ที่ไม่ทำตารางเพี้ยนสะสม |
+| `tests/scheduler.test.ts` | **integration กับ Postgres จริง** — **ยิงพร้อมกัน 5 ตัว push ถูกเรียกครั้งเดียว**, retry 3 ครั้งแล้ว failed, โควตาหมดไม่ retry, กู้แถวที่ค้างในสถานะ `sending`, `jobId = occurrence id`, horizon 1 ชม., snooze สร้างแถวใหม่ไม่แก้แถวเดิม |
 
 > `tests/reminders.test.ts` ต้องมี Postgres รันอยู่ (`docker compose up -d postgres`)
 > `tests/globalSetup.ts` จะรัน migration ลง DB ชื่อ `nami_test` ให้เอง
@@ -349,7 +431,9 @@ src/
 │  ├─ postback.ts       encode/decode postback + zod (data จากเครื่องผู้ใช้ เชื่อไม่ได้)
 │  ├─ flex/
 │  │  ├─ theme.ts       สี/ขนาดกลาง
-│  │  └─ reminderConfirm.ts
+│  │  ├─ reminderConfirm.ts   ยืนยันตอนตั้ง (รองรับทั้งครั้งเดียวและซ้ำ)
+│  │  ├─ reminderFire.ts      ตอนยิง — เสร็จแล้ว/เลื่อน 10 นาที/เลื่อน 1 ชม./ปิด
+│  │  └─ reminderList.ts      carousel + ปุ่มแก้เวลา/ลบรายตัว
 │  ├─ signature.ts      verify X-Line-Signature (timing-safe)
 │  ├─ client.ts         MessagingApiClient + BlobClient
 │  ├─ reply.ts          reply (ฟรี)
@@ -373,8 +457,10 @@ src/
 │  ├─ groupGate.ts      กติกา "ตอบเฉพาะเมื่อถูกเรียก" ในกลุ่ม
 │  └─ lifecycle.ts      unfollow/leave → ปิดแชท หยุดยิง push
 ├─ worker/
-│  ├─ index.ts          เข้า worker process
-│  └─ eventWorker.ts    ประมวลผล event + กันซ้ำ 2 ชั้น
+│  ├─ index.ts          เข้า worker process (3 worker)
+│  ├─ eventWorker.ts    ประมวลผล event + กันซ้ำ 2 ชั้น
+│  ├─ fireWorker.ts     ยิงเตือน + retry exponential backoff
+│  └─ schedulerWorker.ts  repeatable job กวาดทุก 1 นาที
 ├─ nlu/
 │  ├─ schema.ts         zod schema ของผล NLU (แหล่งความจริงเดียว)
 │  ├─ prompt.ts         system prompt + กฎเวลาไทย
@@ -382,7 +468,10 @@ src/
 │  ├─ resolveTime.ts    dueAtLocal → UTC + กฎเวลาที่ผ่านไปแล้ว
 │  └─ thaiTime.ts       ตัวตรวจทานคำบอกเวลาไทย (deterministic)
 ├─ reminders/service.ts CRUD การเตือน (ทรานแซกชัน + เช็คว่าเป็นของแชทนั้น)
-├─ scheduler/           (P3)
+├─ scheduler/
+│  ├─ nextOccurrence.ts คำนวณรอบถัดไป (floating date trick + quiet hours)
+│  ├─ fire.ts           claim → push → sent + กู้แถวค้าง
+│  └─ enqueue.ts        enqueue horizon 1 ชม. + sweeper + ลบ job ของแชทที่ปิด
 └─ vault/               (P4)
 ```
 
@@ -474,6 +563,8 @@ npm run db:verify
 | embedding พังตอน insert | `EMBEDDING_DIMENSIONS` ไม่ตรงกับ `vector(N)` ใน DB — รัน `npm run db:verify` |
 | ต่อ Supabase ไม่ได้จากเน็ตองค์กร | `db.<ref>.supabase.co` เป็น IPv6-only และเน็ตองค์กรมักบล็อก outbound 5432/6543 — dev ให้ใช้ Postgres ใน docker แล้วต่อ Supabase ตอน deploy |
 | `.env` sourcing พังใน shell | ค่าที่มีช่องว่างต้องครอบ quote เช่น `OPENROUTER_APP_NAME="Nami LINE Assistant"` |
-| ตั้งเตือนแล้วแต่ไม่มีอะไรเตือน | ปกติ — scheduler มาใน P3 ตอนนี้บันทึกกับยืนยันได้แต่ยังไม่ยิง |
+| ตั้งเตือนแล้วแต่ไม่มีอะไรเตือน | ต้องรัน `npm run dev:worker` ด้วย — scheduler อยู่ใน worker process ไม่ใช่ API |
+| `does not provide an export named 'RRule'` | `rrule` เป็น CJS ต้อง default import แล้วแตกเอง (vitest transpile ให้ผ่านแต่ Node จริงพัง) |
+| การเตือนซ้ำไปยิงตอนดึกทั้งที่ตั้งเช้า | เคยเป็นบั๊กที่โมเดลส่งชั่วโมงมาแทนนาทีจากเที่ยงคืน — `resolveFireMinute()` คุมแล้ว |
 | `schema_mismatch: dueAtLocal` | โมเดลเติมวินาทีมาให้เอง — `LOCAL_DATETIME_LOOSE_RE` รับแล้วตัดทิ้ง |
 | นามิตอบว่า "เตือนซ้ำยังทำไม่ได้" ทั้งที่ตั้งครั้งเดียว | ข้อความมีคำที่ `looksRecurring()` จับว่าเป็นการซ้ำ ดูกฎในหัวข้อ NLU |

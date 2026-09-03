@@ -84,6 +84,26 @@ export function formatMinuteOfDay(minute: number): string {
 }
 
 /**
+ * ตั้งเวลาของวันหนึ่งเป็น "นาทีที่ N จากเที่ยงคืน" แบบยึดหน้าปัดนาฬิกา
+ *
+ * ห้ามใช้ startOf('day').plus({ minutes }) เพราะ plus บวก "ระยะเวลาจริง"
+ * วันที่มี DST มี 23 หรือ 25 ชั่วโมง ทำให้ผลลัพธ์เพี้ยนไป 1 ชั่วโมง
+ *   ตัวอย่างจริง: 1 พ.ย. 2026 ที่นิวยอร์ก (วันเลื่อนนาฬิกาถอยหลัง)
+ *   00:00 + 480 นาที = 07:00 ไม่ใช่ 08:00
+ * set() ยึดหน้าปัด จึงได้ 08:00 เสมอไม่ว่า offset จะขยับไปทางไหน
+ *
+ * รองรับนาทีเกิน 1440 (เที่ยงคืนของวันถัดไป) ด้วยการบวกวันแบบปฏิทินก่อน
+ */
+export function atLocalMinute(localDay: DateTime, minute: number): DateTime {
+  const days = Math.floor(minute / 1440);
+  const m = ((minute % 1440) + 1440) % 1440;
+  return localDay
+    .startOf('day')
+    .plus({ days })
+    .set({ hour: Math.floor(m / 60), minute: m % 60, second: 0, millisecond: 0 });
+}
+
+/**
  * อยู่ในช่วงเวลาเงียบหรือไม่
  * รองรับช่วงที่ข้ามเที่ยงคืน เช่น start=1320 (22:00) end=420 (07:00)
  * ช่วงเป็นแบบ [start, end) — ถึงเวลา end แล้วถือว่าออกจากช่วงเงียบ
@@ -122,8 +142,7 @@ export function shiftOutOfQuietHours(
   const crossesMidnight = startMinute > endMinute;
   const targetDay = crossesMidnight && mod >= startMinute ? local.plus({ days: 1 }) : local;
 
-  const shifted = targetDay.startOf('day').plus({ minutes: endMinute });
-  return shifted.toUTC().toJSDate();
+  return atLocalMinute(targetDay, endMinute).toUTC().toJSDate();
 }
 
 /**
@@ -137,5 +156,5 @@ export function localDayAndMinuteToUtc(
   minute: number,
   tz: string = env.APP_TIMEZONE,
 ): Date {
-  return localDay.setZone(tz).startOf('day').plus({ minutes: minute }).toUTC().toJSDate();
+  return atLocalMinute(localDay.setZone(tz), minute).toUTC().toJSDate();
 }

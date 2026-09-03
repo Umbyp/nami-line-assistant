@@ -120,3 +120,187 @@ describe('pickerFormat', () => {
     expect(pickerFormat(bkk('2026-09-04T01:00'), BKK)).toBe('2026-09-04T01:00');
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// P3: reminderFire + reminderList + reminderConfirm แบบซ้ำ
+// ─────────────────────────────────────────────────────────────
+import { reminderFire } from '../src/line/flex/reminderFire.js';
+import { reminderList, LIST_MAX } from '../src/line/flex/reminderList.js';
+import type { Reminder } from '@prisma/client';
+
+const OID = '99999999-8888-4777-8666-555555555555';
+
+function fireInput(over: Partial<Parameters<typeof reminderFire>[0]> = {}) {
+  return {
+    occurrenceId: OID,
+    reminderId: ID,
+    title: 'กินยา',
+    fireAtUtc: bkk('2026-09-03T18:00'),
+    isRecurring: false,
+    tz: BKK,
+    now: NOW,
+    ...over,
+  };
+}
+
+function footerButtons(msg: any): any[] {
+  const flat: any[] = [];
+  const walk = (n: any): void => {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (n && typeof n === 'object') {
+      if (n.type === 'button') flat.push(n);
+      Object.values(n).forEach(walk);
+    }
+  };
+  walk(msg.contents.footer);
+  return flat;
+}
+
+describe('reminderFire', () => {
+  it('altText มีชื่อเรื่อง (คนเห็นอันนี้ใน notification)', () => {
+    expect(reminderFire(fireInput()).altText).toContain('กินยา');
+  });
+
+  it('มี 4 ปุ่มตามที่ตกลง: เสร็จแล้ว / เลื่อน 10 นาที / เลื่อน 1 ชม. / ปิดการเตือนนี้', () => {
+    const labels = footerButtons(reminderFire(fireInput())).map((b) => b.action.label);
+    expect(labels).toEqual(['เสร็จแล้ว', 'เลื่อน 10 นาที', 'เลื่อน 1 ชม.', 'ปิดการเตือนนี้']);
+  });
+
+  it('ปุ่มเสร็จแล้วและเลื่อน พา occurrenceId ไป (เลื่อนแค่รอบนี้ ไม่ใช่ทั้งชุด)', () => {
+    const bs = footerButtons(reminderFire(fireInput()));
+    for (const b of bs.slice(0, 3)) {
+      const out = decodePostback(b.action.data);
+      expect(out.ok).toBe(true);
+      if (out.ok) expect('oid' in out.action && out.action.oid).toBe(OID);
+    }
+  });
+
+  it('ปุ่มปิดการเตือน พา reminderId ไป (ปิดทั้งชุด)', () => {
+    const off = footerButtons(reminderFire(fireInput())).at(-1);
+    const out = decodePostback(off.action.data);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect('id' in out.action && out.action.id).toBe(ID);
+  });
+
+  it('ปุ่มเลื่อนพาจำนวนนาทีที่ถูกต้อง', () => {
+    const bs = footerButtons(reminderFire(fireInput()));
+    const mins = bs
+      .map((b) => decodePostback(b.action.data))
+      .filter((r) => r.ok && r.action.a === 'rm.snooze')
+      .map((r) => (r.ok && 'm' in r.action ? r.action.m : null));
+    expect(mins).toEqual([10, 60]);
+  });
+
+  it('การเตือนซ้ำแสดงว่าซ้ำแบบไหน', () => {
+    const all = texts(
+      reminderFire(
+        fireInput({ isRecurring: true, rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', fireAtMinuteLocal: 480 }),
+      ),
+    ).join(' | ');
+    expect(all).toContain('ทุกวันจันทร์-ศุกร์');
+  });
+
+  it('การเตือนครั้งเดียวไม่แสดงข้อความเรื่องความซ้ำ', () => {
+    const all = texts(reminderFire(fireInput())).join(' | ');
+    expect(all).not.toContain('ทุก');
+  });
+});
+
+function fakeReminder(over: Partial<Reminder> = {}): Reminder {
+  return {
+    id: ID,
+    chatId: 'c1',
+    createdBy: 'u1',
+    title: 'ส่งรายงาน',
+    note: null,
+    kind: 'once',
+    dueAtUtc: bkk('2026-09-04T09:00'),
+    rrule: null,
+    everyMinutes: null,
+    fireAtMinuteLocal: null,
+    mentionUserIds: [],
+    source: 'text',
+    status: 'active',
+    nextFireAtUtc: bkk('2026-09-04T09:00'),
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...over,
+  } as Reminder;
+}
+
+describe('reminderList', () => {
+  it('ไม่มีรายการ → ตอบเป็นข้อความ ไม่ใช่ carousel ว่าง', () => {
+    const m = reminderList({ reminders: [], tz: BKK, now: NOW });
+    expect(m.type).toBe('text');
+  });
+
+  it('มีรายการ → carousel 1 bubble ต่อ 1 การเตือน', () => {
+    const m = reminderList({ reminders: [fakeReminder(), fakeReminder({ id: OID })], tz: BKK, now: NOW }) as any;
+    expect(m.type).toBe('flex');
+    expect(m.contents.type).toBe('carousel');
+    expect(m.contents.contents).toHaveLength(2);
+  });
+
+  it('ตัดที่ LIST_MAX เพราะ LINE จำกัด carousel', () => {
+    const many = Array.from({ length: 25 }, (_, i) => fakeReminder({ id: `${i}` }));
+    const m = reminderList({ reminders: many, total: 25, tz: BKK, now: NOW }) as any;
+    expect(m.contents.contents).toHaveLength(LIST_MAX);
+  });
+
+  it('การเตือนครั้งเดียวมีปุ่มเปลี่ยนเวลา + ลบ', () => {
+    const m = reminderList({ reminders: [fakeReminder()], tz: BKK, now: NOW }) as any;
+    const labels = footerButtons({ contents: m.contents.contents[0] }).map((b) => b.action.label);
+    expect(labels).toEqual(['เปลี่ยนเวลา', 'ลบ']);
+  });
+
+  it('การเตือนซ้ำมีแค่ปุ่มลบ (เปลี่ยนเวลาของทุกวันไม่ใช่การเลือกวันเวลาครั้งเดียว)', () => {
+    const rec = fakeReminder({ kind: 'recurring', rrule: 'FREQ=DAILY', fireAtMinuteLocal: 480 });
+    const m = reminderList({ reminders: [rec], tz: BKK, now: NOW }) as any;
+    const labels = footerButtons({ contents: m.contents.contents[0] }).map((b) => b.action.label);
+    expect(labels).toEqual(['ลบ']);
+  });
+
+  it('แสดงคำอธิบายความซ้ำในการ์ด', () => {
+    const rec = fakeReminder({ kind: 'recurring', rrule: 'FREQ=MONTHLY;BYMONTHDAY=25', fireAtMinuteLocal: 540 });
+    const m = reminderList({ reminders: [rec], tz: BKK, now: NOW }) as any;
+    const all = texts(m.contents.contents[0]).join(' | ');
+    expect(all).toContain('ทุกวันที่ 25 ของเดือน 09:00');
+  });
+
+  it('ปุ่มลบพา reminderId ที่ถอดกลับได้', () => {
+    const m = reminderList({ reminders: [fakeReminder()], tz: BKK, now: NOW }) as any;
+    const del = footerButtons({ contents: m.contents.contents[0] }).at(-1);
+    const out = decodePostback(del.action.data);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect('id' in out.action && out.action.id).toBe(ID);
+  });
+});
+
+describe('reminderConfirm — แบบซ้ำ', () => {
+  const rec = {
+    ...base,
+    recurrenceLabel: 'ทุกวันจันทร์-ศุกร์ 08:00',
+    dueAtUtc: bkk('2026-09-04T08:00'),
+  };
+
+  it('altText บอกความซ้ำ ไม่ใช่เวลาครั้งเดียว', () => {
+    expect(reminderConfirm(rec).altText).toContain('ทุกวันจันทร์-ศุกร์');
+  });
+
+  it('แสดงทั้งความซ้ำและรอบแรก', () => {
+    const all = texts(reminderConfirm(rec)).join(' | ');
+    expect(all).toContain('ทุกวันจันทร์-ศุกร์ 08:00');
+    expect(all).toContain('ครั้งแรก');
+  });
+
+  it('ไม่มีปุ่ม datetimepicker (ใช้ดูรายการแทน)', () => {
+    const bs = buttons(reminderConfirm(rec));
+    expect(bs[0].action.type).toBe('postback');
+    expect(bs[0].action.label).toBe('ดูรายการ');
+  });
+
+  it('บอกผู้ใช้เมื่อรอบแรกถูกเลื่อนเพราะช่วงเวลาเงียบ', () => {
+    const all = texts(reminderConfirm({ ...rec, quietHoursShifted: true })).join(' | ');
+    expect(all).toContain('ช่วงเวลาเงียบ');
+  });
+});

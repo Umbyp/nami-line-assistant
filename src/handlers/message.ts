@@ -6,9 +6,12 @@ import { reminderConfirm } from '../line/flex/reminderConfirm.js';
 import { gateGroupMessage } from './groupGate.js';
 import { parseUserMessage, needsClarification, clarificationText } from '../nlu/parse.js';
 import { resolveDueAt } from '../nlu/resolveTime.js';
-import { looksRecurring, verifyDueAt } from '../nlu/thaiTime.js';
-import { createOnceReminder, listActiveReminders } from '../reminders/service.js';
-import { formatThaiFriendly } from '../lib/time.js';
+import { looksRecurring, resolveFireMinute, verifyDueAt } from '../nlu/thaiTime.js';
+import { createOnceReminder, createRecurringReminder } from '../reminders/service.js';
+import { enqueueDueOccurrences } from '../scheduler/enqueue.js';
+import { describeRecurrence } from '../scheduler/nextOccurrence.js';
+import { replyWithList } from './postback.js';
+import { prisma as db } from '../lib/prisma.js';
 import { env } from '../config/env.js';
 import type { ChatContext } from './context.js';
 import type { NluResult } from '../nlu/schema.js';
@@ -17,8 +20,6 @@ import type { NluResult } from '../nlu/schema.js';
 const NOT_YET: Record<string, string> = {
   search_vault: 'การค้นของที่เคยส่งไว้ นามิยังทำไม่ได้นะ กำลังทำอยู่ 🙏',
   save_to_vault: 'การเก็บของเข้าคลัง นามิยังทำไม่ได้นะ กำลังทำอยู่ 🙏',
-  cancel_reminder:
-    'ยกเลิกด้วยการพิมพ์ยังทำไม่ได้ ใช้ปุ่ม [ยกเลิก] ในการ์ดที่นามิส่งให้ตอนตั้งเตือนได้เลย',
 };
 
 export async function handleMessageEvent(
@@ -109,7 +110,7 @@ async function handleTextMessage(
       return;
 
     case 'list_reminders':
-      await handleList(replyToken, ctx);
+      await replyWithList(replyToken, ctx);
       return;
 
     case 'help':
@@ -120,9 +121,14 @@ async function handleTextMessage(
       await reply(replyToken, [textMessage('สวัสดีจ้า มีอะไรให้นามิช่วยบอกได้เลย')]);
       return;
 
+    case 'cancel_reminder':
+      // ยังแยกไม่ได้ว่าจะยกเลิกอันไหนจากข้อความล้วน → โชว์รายการให้กดลบ
+      // ส่งข้อความนำกับรายการไปใน reply เดียว เพราะ replyToken ใช้ได้ครั้งเดียว
+      await replyWithList(replyToken, ctx, 'อันไหนดี กดปุ่มลบในรายการได้เลย');
+      return;
+
     case 'search_vault':
     case 'save_to_vault':
-    case 'cancel_reminder':
       await reply(replyToken, [textMessage(NOT_YET[r.intent] ?? 'ยังทำไม่ได้นะ')]);
       return;
 
@@ -158,10 +164,7 @@ async function handleCreateReminder(
       'โมเดลบอกว่าซ้ำ แต่ข้อความไม่มีตัวบอกความซ้ำ → ถือว่าครั้งเดียว',
     );
   } else if (modelSaysRecurring) {
-    // P3 จะรับ recurring — ตอนนี้บอกตรงๆ ว่ายังไม่ได้ ดีกว่าบันทึกครึ่งๆ กลางๆ
-    await reply(replyToken, [
-      textMessage('การเตือนซ้ำประจำ นามิยังทำไม่ได้นะ กำลังทำอยู่ 🙏 ตอนนี้ตั้งเตือนครั้งเดียวได้'),
-    ]);
+    await handleCreateRecurring(draft, replyToken, ctx, originalText);
     return;
   }
 
@@ -229,30 +232,87 @@ async function handleCreateReminder(
 }
 
 /**
- * รายการเตือนแบบข้อความล้วน — ของชั่วคราว
- * P3 จะเปลี่ยนเป็น Flex reminderList ที่มีปุ่มแก้/ลบรายตัว
- * ที่ทำไว้เพราะผู้ใช้ที่เพิ่งตั้งเตือนจะถามต่อทันทีว่า "มีเตือนอะไรบ้าง"
- * ตอบว่ายังทำไม่ได้ทั้งที่มีข้อมูลอยู่แล้วมันแย่กว่า
+ * สร้างการเตือนซ้ำ
+ *
+ * quiet hours ใช้ค่าของผู้ตั้งเตือน (ผู้ใช้แต่ละคนตั้งเองได้)
+ * ถ้ายังไม่มีในตาราง users ให้ใช้ค่าดีฟอลต์จาก env
  */
-async function handleList(replyToken: string, ctx: ChatContext): Promise<void> {
-  const items = await listActiveReminders(ctx.chat.id);
-  if (items.length === 0) {
-    await reply(replyToken, [textMessage('ยังไม่มีการเตือนที่ตั้งไว้เลย')]);
+async function handleCreateRecurring(
+  draft: NonNullable<NluResult['reminder']>,
+  replyToken: string,
+  ctx: ChatContext,
+  originalText: string,
+): Promise<void> {
+  if (!ctx.senderUserId) {
+    await reply(replyToken, [
+      textMessage('นามิยังไม่รู้ว่าคุณเป็นใคร ลองเพิ่มนามิเป็นเพื่อนก่อนนะ'),
+    ]);
     return;
   }
 
-  const now = new Date();
-  const lines = items.map((r, i) => {
-    const when = r.nextFireAtUtc
-      ? formatThaiFriendly(r.nextFireAtUtc, env.APP_TIMEZONE, now)
-      : 'ยังไม่กำหนด';
-    return `${i + 1}. ${r.title} — ${when}`;
+  // ── หาเวลาที่จะเตือนเอง ไม่เชื่อค่าที่โมเดลให้มา ──
+  // โมเดลส่ง "ชั่วโมง" มาแทน "นาทีจากเที่ยงคืน" ซ้ำทุกรอบ (8 โมง → 8 ไม่ใช่ 480)
+  // ถ้าเชื่อตรงๆ การเตือนจะไปตกตอน 00:08 แล้วถูกเลื่อนเพราะช่วงเวลาเงียบ
+  const fire = draft.everyMinutes
+    ? { minute: null, source: 'none' as const, corrected: false }
+    : resolveFireMinute({
+        text: originalText,
+        modelMinute: draft.fireAtMinuteLocal,
+        modelDueAtLocal: draft.dueAtLocal,
+      });
+
+  if (fire.corrected) {
+    logger.warn(
+      { text: originalText, modelGave: draft.fireAtMinuteLocal, used: fire.minute, source: fire.source },
+      'แก้เวลาเตือนซ้ำที่โมเดลให้มา',
+    );
+  }
+
+  // ต้องรู้เวลาที่จะเตือนในแต่ละรอบ ไม่งั้นเดาไม่ได้ (ยกเว้นแบบทุก N นาที)
+  if (fire.minute == null && !draft.everyMinutes) {
+    await reply(replyToken, [textMessage('ให้เตือนกี่โมงดี')]);
+    return;
+  }
+
+  const user = await db.user.findUnique({ where: { lineUserId: ctx.senderUserId } });
+
+  const out = await createRecurringReminder({
+    chatId: ctx.chat.id,
+    createdBy: ctx.senderUserId,
+    title: draft.title,
+    note: draft.note,
+    rrule: draft.rrule,
+    everyMinutes: draft.everyMinutes,
+    fireAtMinuteLocal: fire.minute,
+    tz: user?.tz ?? env.APP_TIMEZONE,
+    quietHoursStart: user?.quietHoursStart ?? env.DEFAULT_QUIET_HOURS_START,
+    quietHoursEnd: user?.quietHoursEnd ?? env.DEFAULT_QUIET_HOURS_END,
+    source: 'text',
   });
 
+  if (!out.ok) {
+    logger.warn({ reason: out.reason, rrule: draft.rrule }, 'สร้างการเตือนซ้ำไม่สำเร็จ');
+    await reply(replyToken, [
+      textMessage('นามิยังจับไม่ได้ว่าให้เตือนซ้ำแบบไหน ลองบอกแบบนี้ได้ไหม "ทุกวันจันทร์ 8 โมง"'),
+    ]);
+    return;
+  }
+
+  // รอบแรกอาจอยู่ใน 1 ชม. ข้างหน้า → enqueue ทันที ไม่ต้องรอ sweeper
+  await enqueueDueOccurrences().catch((err) =>
+    logger.warn({ err }, 'enqueue หลังสร้างการเตือนซ้ำไม่สำเร็จ (sweeper จะเก็บให้)'),
+  );
+
   await reply(replyToken, [
-    textMessage(
-      [`มีการเตือนอยู่ ${items.length} รายการ`, '', ...lines, '', '(ปุ่มแก้/ลบรายตัวกำลังทำอยู่)'].join('\n'),
-    ),
+    reminderConfirm({
+      reminderId: out.reminder.id,
+      title: out.reminder.title,
+      note: out.reminder.note,
+      dueAtUtc: out.firstFireAtUtc,
+      recurrenceLabel: describeRecurrence(draft.rrule, draft.everyMinutes, fire.minute),
+      quietHoursShifted: out.shiftedByQuietHours,
+      unknownAssignees: ctx.isGroup && draft.assigneeNames.length > 0 ? draft.assigneeNames : [],
+    }),
   ]);
 }
 
@@ -288,9 +348,14 @@ function helpText(isGroup: boolean): string {
     '• "พรุ่งนี้บ่าย 3 ประชุมกับลูกค้า"',
     '• "อีก 2 ชั่วโมงเตือนโทรกลับลูกค้า"',
     '',
-    'ดูรายการ — "มีเตือนอะไรบ้าง"',
+    'เตือนซ้ำประจำ',
+    '• "ทุกวันจันทร์-ศุกร์ 8 โมง เตือนส่งรายงาน"',
+    '• "ทุกวันที่ 25 เตือนจ่ายค่าบัตร"',
+    '• "ทุก 30 นาที เตือนพักสายตา"',
     '',
-    'กำลังทำอยู่: เตือนซ้ำประจำ · อ่านรูปตารางเรียน/ใบนัด · เก็บและค้นไฟล์',
+    'ดูรายการ — "มีเตือนอะไรบ้าง" (มีปุ่มแก้เวลา/ลบให้)',
+    '',
+    'กำลังทำอยู่: อ่านรูปตารางเรียน/ใบนัด · เก็บและค้นไฟล์',
   ];
   if (isGroup) {
     lines.push('', 'ในกลุ่ม เรียกนามิด้วย @นามิ หรือขึ้นต้นข้อความด้วย "นามิ" นะ');

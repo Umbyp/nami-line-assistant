@@ -7,6 +7,7 @@ import {
   hasRelativeDayWord,
   looksRecurring,
   nextWeekday,
+  resolveFireMinute,
   verifyDueAt,
 } from '../src/nlu/thaiTime.js';
 import { BKK } from '../src/lib/time.js';
@@ -261,6 +262,69 @@ describe('looksRecurring', () => {
     'เตือนกินยา 18.00',
     'เตือน 25 ก.ย. 09.00 ประชุม',
   ])('ครั้งเดียว: %s', (t) => expect(looksRecurring(t)).toBe(false));
+});
+
+describe('resolveFireMinute — เวลาของการเตือนซ้ำ', () => {
+  // โมเดลส่ง "ชั่วโมง" มาแทน "นาทีจากเที่ยงคืน" ซ้ำทุกรอบ
+  // ถ้าเชื่อตรงๆ "ทุกวัน 8 โมง" จะไปตกตอน 00:08
+  it('ข้อความมีเวลาชัด → ใช้ค่าที่คำนวณเอง และบอกว่าแก้ให้', () => {
+    const out = resolveFireMinute({
+      text: 'ทุกวันจันทร์-ศุกร์ 8 โมง เตือนส่งรายงาน',
+      modelMinute: 8,
+      modelDueAtLocal: '2026-09-08T08:00:00',
+    });
+    expect(out.minute).toBe(480);
+    expect(out.source).toBe('text');
+    expect(out.corrected).toBe(true);
+  });
+
+  it('รูปแบบ 23.00 ที่โมเดลส่งมาเป็น 23', () => {
+    const out = resolveFireMinute({
+      text: 'ทุกวัน 23.00 เตือนกินยา',
+      modelMinute: 23,
+      modelDueAtLocal: '2026-09-03T23:00:00',
+    });
+    expect(out.minute).toBe(1380);
+    expect(out.corrected).toBe(true);
+  });
+
+  it('โมเดลให้ค่าถูกอยู่แล้ว → ไม่นับว่าแก้', () => {
+    const out = resolveFireMinute({
+      text: 'ทุกวัน 8 โมงเช้า เตือนออกกำลังกาย',
+      modelMinute: 480,
+      modelDueAtLocal: null,
+    });
+    expect(out.minute).toBe(480);
+    expect(out.corrected).toBe(false);
+  });
+
+  it('ข้อความไม่มีเวลาชัด แต่ dueAtLocal มี → ใช้จาก dueAtLocal', () => {
+    const out = resolveFireMinute({
+      text: 'ทุกวันตอนตื่นนอน เตือนกินยา',
+      modelMinute: 7,
+      modelDueAtLocal: '2026-09-04T07:30:00',
+    });
+    expect(out.minute).toBe(450);
+    expect(out.source).toBe('due_at_local');
+    expect(out.corrected).toBe(true);
+  });
+
+  it('ไม่มีอะไรให้ใช้เลย → null (ต้องถามผู้ใช้กลับ)', () => {
+    const out = resolveFireMinute({ text: 'ทุกวันที่ 25 เตือนจ่ายค่าบัตร', modelMinute: null, modelDueAtLocal: null });
+    expect(out.minute).toBeNull();
+    expect(out.source).toBe('none');
+  });
+
+  it('เหลือแต่ค่าของโมเดล → ใช้ไปตามนั้น', () => {
+    const out = resolveFireMinute({ text: 'ทุกวันตอนสายๆ', modelMinute: 600, modelDueAtLocal: null });
+    expect(out.minute).toBe(600);
+    expect(out.source).toBe('model');
+  });
+
+  it('ค่าของโมเดลนอกช่วง 0-1439 → ไม่ใช้', () => {
+    expect(resolveFireMinute({ text: 'ทุกวัน', modelMinute: 5000, modelDueAtLocal: null }).minute).toBeNull();
+    expect(resolveFireMinute({ text: 'ทุกวัน', modelMinute: -5, modelDueAtLocal: null }).minute).toBeNull();
+  });
 });
 
 describe('ตัวช่วยตรวจบริบท', () => {

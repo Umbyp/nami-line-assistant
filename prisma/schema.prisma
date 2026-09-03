@@ -48,6 +48,9 @@ enum ReminderSource {
 
 enum OccurrenceStatus {
   pending
+  /// จองแถวไว้แล้วกำลังยิง — กันสองตัวยิงพร้อมกัน
+  /// ถ้า process ตายตอนนี้ sweeper จะพาย้อนกลับเป็น pending ให้
+  sending
   sent
   failed
   skipped
@@ -182,6 +185,13 @@ model ReminderOccurrence {
   attempt Int              @default(0)
   lastError String?        @map("last_error")
 
+  /// เวลาที่ถูก claim ล่าสุด ใช้หาแถวที่ค้างเพราะ process ตายกลางทาง
+  claimedAt DateTime? @map("claimed_at") @db.Timestamptz(3)
+
+  /// เวลาตามตารางจริงก่อนถูกเลื่อนเพราะ quiet hours
+  /// ต้องเก็บแยก ไม่งั้นการคำนวณรอบถัดไปจะอ้างจากเวลาที่ถูกเลื่อนแล้ว → ตารางเพี้ยนสะสม
+  canonicalFireAtUtc DateTime? @map("canonical_fire_at_utc") @db.Timestamptz(3)
+
   // occurrence ที่เกิดจากการกด "เลื่อน" จะชี้กลับไปที่ตัวเดิม
   snoozedFromId String? @map("snoozed_from_id") @db.Uuid
 
@@ -193,6 +203,8 @@ model ReminderOccurrence {
   @@unique([reminderId, fireAtUtc])
   // index หลักของ sweeper
   @@index([status, fireAtUtc])
+  // หาแถวที่ค้างในสถานะ sending เพราะ process ตายกลางทาง
+  @@index([status, claimedAt])
   @@map("reminder_occurrences")
 }
 

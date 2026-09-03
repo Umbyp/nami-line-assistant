@@ -1,6 +1,8 @@
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { createEventWorker } from './eventWorker.js';
+import { createFireWorker } from './fireWorker.js';
+import { createSchedulerWorker, registerSweepSchedule } from './schedulerWorker.js';
 import { closeQueues } from '../queue/queues.js';
 
 /**
@@ -9,7 +11,10 @@ import { closeQueues } from '../queue/queues.js';
  * มาแย่ง event loop เดียวกัน
  */
 async function main(): Promise<void> {
-  const workers = [createEventWorker()];
+  // ตั้งตารางกวาดก่อนเปิด worker เพื่อให้รอบแรกไม่พลาด
+  await registerSweepSchedule();
+
+  const workers = [createEventWorker(), createFireWorker(), createSchedulerWorker()];
   logger.info({ workers: workers.length }, 'worker พร้อมทำงาน');
 
   const shutdown = async (signal: string): Promise<void> => {

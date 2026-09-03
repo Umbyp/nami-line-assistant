@@ -37,17 +37,46 @@ export async function parseUserMessage(
     return { ok: false, reason: out.reason, detail: out.detail, costUsd: out.costUsd };
   }
 
+  const result = sanitizeNluResult(out.data);
+
   logger.debug(
     {
-      intent: out.data.intent,
-      confidence: out.data.confidence,
-      ambiguous: out.data.ambiguousFields,
+      intent: result.intent,
+      confidence: result.confidence,
+      ambiguous: result.ambiguousFields,
       costUsd: out.costUsd,
     },
     'NLU สำเร็จ',
   );
 
-  return { ok: true, result: out.data, costUsd: out.costUsd };
+  return { ok: true, result, costUsd: out.costUsd };
+}
+
+/**
+ * เก็บกวาดผลของโมเดลด้วยกฎที่เรารู้แน่ ก่อนเอาไปตัดสินใจ
+ *
+ * กรณีที่เจอจริง: "ทุก 30 นาที เตือนพักสายตา"
+ * โมเดลใส่ ambiguousFields = ["time"] ทั้งที่การเตือนแบบ "ทุก N นาที"
+ * ไม่ต้องมีเวลาของวันเลย → ถ้าไม่กรองออก นามิจะถามกลับว่า "กี่โมงดี"
+ * ซึ่งเป็นคำถามที่ตอบไม่ได้ และผู้ใช้จะตั้งเตือนแบบนี้ไม่ได้เลย
+ */
+export function sanitizeNluResult(result: NluResult): NluResult {
+  if (!result.reminder) return result;
+
+  let ambiguousFields = result.ambiguousFields;
+
+  if (result.reminder.everyMinutes) {
+    ambiguousFields = ambiguousFields.filter((f) => f !== 'time');
+  }
+
+  if (ambiguousFields === result.ambiguousFields) return result;
+
+  return {
+    ...result,
+    ambiguousFields,
+    // ถ้าไม่เหลืออะไรกำกวมแล้ว คำถามที่โมเดลเตรียมไว้ก็ไม่ต้องใช้
+    clarifyQuestion: ambiguousFields.length === 0 ? null : result.clarifyQuestion,
+  };
 }
 
 /**

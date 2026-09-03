@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
-import { needsClarification, clarificationText } from '../src/nlu/parse.js';
+import { needsClarification, clarificationText, sanitizeNluResult } from '../src/nlu/parse.js';
 import { buildSystemPrompt, describeNow } from '../src/nlu/prompt.js';
 import { NluResultSchema } from '../src/nlu/schema.js';
 import { toStrictJsonSchema } from '../src/llm/jsonSchema.js';
@@ -37,6 +37,49 @@ describe('needsClarification', () => {
 
   it('confidence เท่ากับ threshold พอดี → ไม่ถาม', () => {
     expect(needsClarification(result({ confidence: 0.6 }))).toBe(false);
+  });
+});
+
+describe('sanitizeNluResult', () => {
+  const draft = {
+    title: 'พักสายตา', note: null, kind: 'recurring' as const,
+    dueAtLocal: null, dateWasExplicit: false, rrule: null,
+    everyMinutes: 30, fireAtMinuteLocal: null, assigneeNames: [],
+  };
+
+  // เจอจริง: "ทุก 30 นาที เตือนพักสายตา" โมเดลใส่ ambiguousFields = ["time"]
+  // ทั้งที่การเตือนแบบทุก N นาที ไม่มีเวลาของวันให้ระบุ → ถามกลับเป็นคำถามที่ตอบไม่ได้
+  it('everyMinutes → ตัด "time" ออกจาก ambiguousFields', () => {
+    const out = sanitizeNluResult(
+      result({ reminder: draft, ambiguousFields: ['time'], clarifyQuestion: 'กี่โมงดี' }),
+    );
+    expect(out.ambiguousFields).toEqual([]);
+    expect(out.clarifyQuestion).toBeNull();
+    expect(needsClarification(out)).toBe(false);
+  });
+
+  it('everyMinutes แต่ยังมีอย่างอื่นกำกวม → ยังต้องถาม', () => {
+    const out = sanitizeNluResult(
+      result({ reminder: draft, ambiguousFields: ['time', 'title'], clarifyQuestion: 'เรื่องอะไร' }),
+    );
+    expect(out.ambiguousFields).toEqual(['title']);
+    expect(out.clarifyQuestion).toBe('เรื่องอะไร');
+    expect(needsClarification(out)).toBe(true);
+  });
+
+  it('การเตือนที่ใช้ rrule ยังต้องมีเวลา → ไม่ตัด "time"', () => {
+    const out = sanitizeNluResult(
+      result({
+        reminder: { ...draft, everyMinutes: null, rrule: 'FREQ=MONTHLY;BYMONTHDAY=25' },
+        ambiguousFields: ['time'],
+      }),
+    );
+    expect(out.ambiguousFields).toEqual(['time']);
+  });
+
+  it('ไม่มี reminder → คืนของเดิม', () => {
+    const r = result({ intent: 'smalltalk', ambiguousFields: ['time'] });
+    expect(sanitizeNluResult(r)).toBe(r);
   });
 });
 

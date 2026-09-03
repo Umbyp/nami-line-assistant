@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
+import { removePendingJobsForChat } from '../scheduler/enqueue.js';
 
 /**
  * ปิดแชททันทีเมื่อผู้ใช้ block บอท (unfollow) หรือบอทถูกเตะออกจากกลุ่ม (leave)
@@ -8,7 +9,7 @@ import { logger } from '../lib/logger.js';
  * และ LINE จะคืน error 403 ทุกครั้ง
  *
  * push() เช็ค is_active ก่อนยิงเสมอ ดังนั้นแค่ปิด flag นี้ก็หยุดการยิงได้ทั้งหมด
- * (การลบ delayed job ออกจาก BullMQ ทำเพิ่มใน P3 ตอนที่มี fire queue จริง)
+ * แต่ลบ delayed job ออกจาก BullMQ ด้วย เพื่อไม่ให้กิน Redis และไม่รบกวน metric
  */
 export async function deactivateChat(lineChatId: string, reason: string): Promise<void> {
   const chat = await prisma.chat.findUnique({ where: { lineId: lineChatId } });
@@ -19,7 +20,13 @@ export async function deactivateChat(lineChatId: string, reason: string): Promis
     data: { isActive: false, leftAt: new Date() },
   });
 
-  logger.info({ lineChatId, reason }, 'ปิดแชทแล้ว — หยุดยิง push');
+  // ลบ job ที่ตั้งไว้ทิ้ง — ถ้าพลาดก็ไม่เป็นไร push() ยังกันอยู่อีกชั้น
+  const removed = await removePendingJobsForChat(chat.id).catch((err) => {
+    logger.warn({ err, lineChatId }, 'ลบ job ของแชทที่ปิดไม่สำเร็จ (push จะกันให้อยู่แล้ว)');
+    return 0;
+  });
+
+  logger.info({ lineChatId, reason, jobsRemoved: removed }, 'ปิดแชทแล้ว — หยุดยิง push');
 }
 
 export async function markMemberLeft(chatLineId: string, userIds: string[]): Promise<void> {

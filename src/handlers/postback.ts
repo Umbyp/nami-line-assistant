@@ -1,10 +1,19 @@
 import type { webhook } from '@line/bot-sdk';
 import { DateTime } from 'luxon';
 import { logger } from '../lib/logger.js';
+import { prisma } from '../lib/prisma.js';
 import { reply, textMessage } from '../line/reply.js';
 import { reminderConfirm } from '../line/flex/reminderConfirm.js';
+import { reminderList, LIST_MAX } from '../line/flex/reminderList.js';
 import { decodePostback } from '../line/postback.js';
-import { cancelReminder, retimeReminder } from '../reminders/service.js';
+import {
+  cancelReminder,
+  listActiveReminders,
+  markOccurrenceDone,
+  retimeReminder,
+  snoozeOccurrence,
+} from '../reminders/service.js';
+import { enqueueDueOccurrences } from '../scheduler/enqueue.js';
 import { env } from '../config/env.js';
 import { formatThaiFriendly } from '../lib/time.js';
 import { LOCAL_DATETIME_RE } from '../nlu/schema.js';
@@ -29,28 +38,29 @@ export async function handlePostbackEvent(
   logger.info({ action: action.a, chat: ctx.lineChatId }, 'postback');
 
   switch (action.a) {
-    case 'rm.cancel': {
-      // ส่ง ctx.chat.id ไปด้วยเสมอ — id จาก postback เชื่อไม่ได้ว่าเป็นของแชทนี้
+    // ── ยกเลิก / ปิดการเตือน ──
+    case 'rm.cancel':
+    case 'rm.off': {
+      // ส่ง ctx.chat.id ไปเสมอ — id จาก postback เชื่อไม่ได้ว่าเป็นของแชทนี้
       const r = await cancelReminder(action.id, ctx.chat.id);
       if (!replyToken) return;
       await reply(replyToken, [
-        textMessage(r ? `ยกเลิกแล้ว: ${r.title}` : 'ไม่เจอการเตือนนี้ อาจถูกลบไปแล้ว'),
+        textMessage(
+          r
+            ? `ปิดการเตือน "${r.title}" แล้ว ไม่เตือนอีกนะ`
+            : 'ไม่เจอการเตือนนี้ อาจถูกลบไปแล้ว',
+        ),
       ]);
       return;
     }
 
+    // ── เปลี่ยนเวลา (datetimepicker) ──
     case 'rm.retime': {
-      const picked = event.postback?.params;
-      const raw =
-        picked && typeof picked === 'object' && 'datetime' in picked
-          ? (picked as { datetime?: string }).datetime
-          : undefined;
+      const raw = readPickerDatetime(event.postback?.params);
 
-      if (!raw || !LOCAL_DATETIME_RE.test(raw)) {
-        logger.warn({ raw }, 'datetimepicker ส่งค่ามาผิดรูป');
-        if (replyToken) {
-          await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จ ลองกดอีกทีนะ')]);
-        }
+      if (!raw) {
+        logger.warn({ params: event.postback?.params }, 'datetimepicker ส่งค่ามาผิดรูป');
+        if (replyToken) await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จ ลองกดอีกทีนะ')]);
         return;
       }
 
@@ -78,6 +88,11 @@ export async function handlePostbackEvent(
         return;
       }
 
+      // เวลาใหม่อาจอยู่ในช่วง 1 ชม. ข้างหน้า → enqueue ทันที ไม่ต้องรอ sweeper
+      await enqueueDueOccurrences().catch((err) =>
+        logger.warn({ err }, 'enqueue หลังเปลี่ยนเวลาไม่สำเร็จ (sweeper จะเก็บให้)'),
+      );
+
       await reply(replyToken, [
         reminderConfirm({
           reminderId: r.id,
@@ -89,20 +104,47 @@ export async function handlePostbackEvent(
       return;
     }
 
-    case 'rm.list': {
-      if (replyToken) {
-        await reply(replyToken, [textMessage('รายการเตือนแบบมีปุ่มกำลังทำอยู่ 🙏')]);
+    // ── กดว่าเสร็จแล้ว ──
+    case 'rm.done': {
+      const out = await markOccurrenceDone(action.oid, ctx.chat.id);
+      if (!replyToken) return;
+      if (!out) {
+        await reply(replyToken, [textMessage('ไม่เจอการเตือนนี้แล้ว')]);
+        return;
       }
+      await reply(replyToken, [
+        textMessage(
+          out.wasRecurring
+            ? `เก่งมาก 👍 รอบถัดไปนามิจะเตือนอีกนะ`
+            : `เยี่ยม 👍 "${out.reminder.title}" เสร็จแล้ว`,
+        ),
+      ]);
       return;
     }
 
-    // P3
-    case 'rm.done':
-    case 'rm.snooze':
-    case 'rm.off': {
-      if (replyToken) {
-        await reply(replyToken, [textMessage('ปุ่มนี้จะใช้ได้ตอนนามิเริ่มยิงเตือนได้ 🙏')]);
+    // ── เลื่อน ──
+    case 'rm.snooze': {
+      const out = await snoozeOccurrence(action.oid, ctx.chat.id, action.m);
+      if (!replyToken) return;
+      if (!out) {
+        await reply(replyToken, [textMessage('ไม่เจอการเตือนนี้แล้ว')]);
+        return;
       }
+
+      // เวลาที่เลื่อนไปมักอยู่ใน 1 ชม. → enqueue ทันที
+      await enqueueDueOccurrences().catch((err) =>
+        logger.warn({ err }, 'enqueue หลังเลื่อนไม่สำเร็จ (sweeper จะเก็บให้)'),
+      );
+
+      const when = formatThaiFriendly(out.occurrence.fireAtUtc, env.APP_TIMEZONE);
+      await reply(replyToken, [textMessage(`เลื่อนไปเตือน ${when} นะ`)]);
+      return;
+    }
+
+    // ── ดูรายการทั้งหมด ──
+    case 'rm.list': {
+      if (!replyToken) return;
+      await replyWithList(replyToken, ctx);
       return;
     }
 
@@ -115,8 +157,41 @@ export async function handlePostbackEvent(
   }
 }
 
-/** ใช้ใน log/debug: สรุปว่าการเตือนถัดไปคือเมื่อไหร่ */
-export function describeNext(dueAtUtc: Date | null): string {
-  if (!dueAtUtc) return 'ไม่มี';
-  return formatThaiFriendly(dueAtUtc, env.APP_TIMEZONE);
+/**
+ * ใช้ร่วมกับ handler ข้อความ ("ดูการเตือนทั้งหมด")
+ *
+ * lead ใช้ใส่ข้อความนำหน้า เพราะ replyToken ใช้ได้ครั้งเดียว
+ * ถ้าอยากทั้งพูดอะไรและโชว์รายการ ต้องส่งไปในการ reply เดียวกัน
+ */
+export async function replyWithList(
+  replyToken: string,
+  ctx: ChatContext,
+  lead?: string,
+): Promise<void> {
+  const total = await prisma.reminder.count({
+    where: { chatId: ctx.chat.id, status: 'active' },
+  });
+  const items = await listActiveReminders(ctx.chat.id, LIST_MAX);
+
+  const messages = [
+    ...(lead ? [textMessage(lead)] : []),
+    reminderList({ reminders: items, total, tz: env.APP_TIMEZONE }),
+  ];
+
+  if (total > LIST_MAX) {
+    messages.push(textMessage(`แสดง ${LIST_MAX} รายการแรกจากทั้งหมด ${total} รายการนะ`));
+  }
+
+  await reply(replyToken, messages);
+}
+
+/**
+ * ดึงค่าจาก datetimepicker
+ * LINE ส่งมาใน postback.params.datetime เป็น 'YYYY-MM-DDThh:mm' ไม่มี timezone
+ */
+function readPickerDatetime(params: unknown): string | null {
+  if (!params || typeof params !== 'object') return null;
+  const v = (params as { datetime?: unknown }).datetime;
+  if (typeof v !== 'string' || !LOCAL_DATETIME_RE.test(v)) return null;
+  return v;
 }
