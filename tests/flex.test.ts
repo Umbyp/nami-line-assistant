@@ -480,3 +480,89 @@ describe('settingsView', () => {
     expect(buttons[1].action.initial).toBe('10:00');
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// feature 3: imageReminderReview (P6-add-on)
+// ─────────────────────────────────────────────────────────────
+import { imageReminderReview } from '../src/line/flex/imageReminderReview.js';
+import type { ReminderDraft } from '@prisma/client';
+
+function fakeDraft(payload: unknown, over: Partial<ReminderDraft> = {}): ReminderDraft {
+  return {
+    id: ID,
+    chatId: 'c1',
+    createdBy: 'u1',
+    status: 'pending',
+    source: 'image',
+    payload,
+    expiresAt: NOW,
+    createdAt: NOW,
+    ...over,
+  } as ReminderDraft;
+}
+
+describe('imageReminderReview', () => {
+  it('มีรายการที่ยืนยันได้ → แสดงชื่อเรื่องทุกอัน + ปุ่มยืนยันทั้งหมด/ไม่ต้อง', () => {
+    const draft = fakeDraft({
+      items: [
+        { title: 'นัดตรวจ', kind: 'once', dueAtUtc: '2026-09-18T02:30:00.000Z', rrule: null, fireAtMinuteLocal: null, confidence: 0.9, problem: null },
+        { title: 'เวรเช้า', kind: 'recurring', dueAtUtc: null, rrule: 'FREQ=WEEKLY;BYDAY=MO', fireAtMinuteLocal: 420, confidence: 0.8, problem: null },
+      ],
+      unclearNotes: [],
+    });
+    const m = imageReminderReview(draft);
+    expect(m.altText).toContain('2 รายการ');
+
+    const all = texts(m).join(' | ');
+    expect(all).toContain('นัดตรวจ');
+    expect(all).toContain('เวรเช้า');
+
+    const buttons = footerButtons({ contents: m.contents as any });
+    expect(buttons.map((b: any) => b.action.label)).toEqual(['ยืนยันทั้งหมด (2 รายการ)', 'ไม่ต้อง']);
+  });
+
+  it('ปุ่มยืนยัน/ไม่ต้อง พา draftId ที่ถอดกลับได้', () => {
+    const draft = fakeDraft({
+      items: [{ title: 'x', kind: 'once', dueAtUtc: '2026-09-18T02:30:00.000Z', rrule: null, fireAtMinuteLocal: null, confidence: 0.9, problem: null }],
+      unclearNotes: [],
+    });
+    const buttons = footerButtons({ contents: imageReminderReview(draft).contents as any });
+    for (const b of buttons) {
+      const out = decodePostback(b.action.data);
+      expect(out.ok).toBe(true);
+      if (out.ok) expect('id' in out.action && out.action.id).toBe(ID);
+    }
+  });
+
+  it('มี item ที่อ่านไม่ออกปนมา → แสดงกล่องเตือนแยกจากรายการที่ยืนยันได้', () => {
+    const draft = fakeDraft({
+      items: [
+        { title: 'นัดตรวจ', kind: 'once', dueAtUtc: '2026-09-18T02:30:00.000Z', rrule: null, fireAtMinuteLocal: null, confidence: 0.9, problem: null },
+        { title: 'อ่านไม่ออก', kind: 'once', dueAtUtc: null, rrule: null, fireAtMinuteLocal: null, confidence: 0, problem: 'อ่านเวลาไม่ออก' },
+      ],
+      unclearNotes: [],
+    });
+    const all = texts(imageReminderReview(draft)).join(' | ');
+    expect(all).toContain('อ่านไม่ออก 1 รายการ');
+  });
+
+  it('มี unclearNotes → แสดงคำเตือนให้ตรวจสอบเอง', () => {
+    const draft = fakeDraft({
+      items: [{ title: 'x', kind: 'once', dueAtUtc: '2026-09-18T02:30:00.000Z', rrule: null, fireAtMinuteLocal: null, confidence: 0.9, problem: null }],
+      unclearNotes: ['ตัวเลขวันที่เลือน'],
+    });
+    const all = texts(imageReminderReview(draft)).join(' | ');
+    expect(all).toContain('ตัวเลขวันที่เลือน');
+    expect(all).toContain('ไม่มั่นใจ');
+  });
+
+  it('ไม่มี item ที่ยืนยันได้เลย → ปุ่มเดียว "รับทราบ" ไม่มีปุ่มยืนยัน', () => {
+    const draft = fakeDraft({
+      items: [{ title: 'พัง', kind: 'once', dueAtUtc: null, rrule: null, fireAtMinuteLocal: null, confidence: 0, problem: 'พัง' }],
+      unclearNotes: ['ทั้งหมดอ่านไม่ออก'],
+    });
+    const m = imageReminderReview(draft);
+    const buttons = footerButtons({ contents: m.contents as any });
+    expect(buttons.map((b: any) => b.action.label)).toEqual(['รับทราบ']);
+  });
+});

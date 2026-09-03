@@ -37,6 +37,10 @@ export const PostbackSchema = z.discriminatedUnion('a', [
   z.object({ a: z.literal('settings.quiet_off') }),
   /** เปิดช่วงเวลาเงียบกลับมาด้วยค่าดีฟอลต์ */
   z.object({ a: z.literal('settings.quiet_on') }),
+  /** ยืนยันบันทึกเตือนที่อ่านได้จากรูป (feature 3) */
+  z.object({ a: z.literal('draft.confirm'), id: z.string().uuid() }),
+  /** ไม่เอาเตือนที่อ่านได้จากรูป */
+  z.object({ a: z.literal('draft.discard'), id: z.string().uuid() }),
   /** ช่วยเหลือ */
   z.object({ a: z.literal('help') }),
 ]);

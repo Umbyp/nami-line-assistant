@@ -18,6 +18,7 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 | **P4** | vault เก็บ + ค้นหา | ✅ เสร็จ |
 | **P5** | โหมดกลุ่ม + mention | ✅ เสร็จ |
 | **P6** | rich menu + ขัดเกลาข้อความ + test | ✅ เสร็จ |
+| **P6+** | ตั้งเตือนจากรูป (feature 3 — เดิมอยู่ใน deliverables ตั้งแต่แรกแต่ตกหล่นไปจนถึงตอนนี้) | ✅ เสร็จ |
 
 ---
 
@@ -413,6 +414,54 @@ query ประกอบ SQL string เอง (`$queryRawUnsafe`) เพรา�
 
 ---
 
+## ตั้งเตือนจากรูป (feature 3)
+
+ส่งรูปใบนัดหมอ/ตารางเรียน/ตารางเวรมาให้นามิ — อ่านด้วย vision แล้วเสนอรายการเตือนให้ยืนยันก่อนบันทึก
+ทำงานควบคู่กับ vault (P4): รูปถูกเก็บเข้า vault เหมือนเดิมเสมอ ไม่ว่าจะตั้งเตือนจากรูปได้หรือไม่
+
+```
+รูป → saveMediaItem (เก็บ vault เหมือน P4)
+    → parseImageForReminders (vision, tier: 'vision')
+    → resolveImageItem ต่อรายการ (ตรวจทานเวลาแบบ deterministic — ห้ามเชื่อโมเดลเรื่องเลข)
+    → createReminderDraft (บันทึกไว้รอยืนยัน หมดอายุใน 1 ชม.)
+    → imageReminderReview Flex → ผู้ใช้กด [ยืนยันทั้งหมด] หรือ [ไม่ต้อง]
+    → confirmReminderDraft (claim แบบ atomic เหมือน fire.ts) → สร้างเตือนจริงทีละรายการ
+```
+
+### หลักการเดียวกับ NLU ข้อความ: ให้โมเดลทำภาษา เราทำเลข
+
+ประวัติทั้งโปรเจกต์พิสูจน์แล้วว่าโมเดลคำนวณตัวเลขเองพลาดซ้ำๆ (ดูหัวข้อ NLU) จึง**ห้ามให้โมเดล
+คำนวณนาทีเอง** — สั่งให้คัดลอกเวลาที่เห็นในเอกสารมาเป็นข้อความ (`timeText`) แล้ว
+`resolveImageItem()` คำนวณเองด้วย `extractClockMinute()` ฟังก์ชันเดียวกับที่ตรวจทานข้อความผู้ใช้
+(ผ่านการทดสอบมาหนักแล้วตั้งแต่ P2)
+
+**บั๊กที่เจอตอน e2e จริง (ไม่ใช่ unit test):** ทดสอบกับตารางเวรจริง โมเดลคัดลอกหัวคอลัมน์
+`"เวรเช้า (07-15)"` มาทั้งช่วงเวลา ไม่ใช่เวลาจุดเดียว — `extractClockMinute()` ปฏิเสธถูกต้องแล้ว
+(ออกแบบมาให้ปฏิเสธช่วงเวลาที่กำกวมในข้อความคุยกันทั่วไป) แต่สำหรับ**เอกสารตารางเวร ความหมายชัดเจน
+อยู่แล้วว่าให้เตือนตอนเริ่มกะ** จึงเพิ่ม `extractRangeStart()` แยกไว้เฉพาะ path อ่านรูป
+(ไม่แก้ `extractClockMinute` ที่ใช้ร่วมกับข้อความ เพราะจะกระทบกฎ "หลายเวลาขัดกัน → ไม่เดา")
+
+ยืนยันด้วย `npm run image:probe` กับเอกสารทดสอบจริง 2 ชุด ผ่าน `parseImageForReminders()` ตัวจริง
+(ไม่ใช่ mock): ใบนัดหมอ **2/2** ถูกต้อง (รวมแปลง พ.ศ. 2569 → ค.ศ. 2026), ตารางเวรพยาบาล 5 วัน
+**15/15** ถูกต้องตรงกับตารางต้นฉบับทุกแถว หลังแก้บั๊กช่วงเวลาข้างต้น
+
+### ทำไมต้องมี ReminderDraft (ไม่บันทึกตรงๆ)
+
+วัดผลจริงตั้งแต่ P1.5 แล้วว่า vision **อ่านตารางหลายคอลัมน์พลาดได้** (โมเดลราคาถูกกว่าเคยอ่านสลับ
+คอลัมน์ตารางเวร) ต่อให้เปลี่ยนมาใช้โมเดลที่แม่นกว่าแล้ว ก็ยังต้องให้ผู้ใช้เห็นก่อนว่านามิอ่านอะไรได้บ้าง
+ตามสเปก — จึงเก็บเป็น draft (หมดอายุ 1 ชม.) แล้วให้ยืนยันทีเดียวทั้งชุด ไม่ใช่บันทึกตรงๆ
+
+`confirmReminderDraft()` ใช้หลัก **claim แบบ atomic** เดียวกับ `fire.ts` (`UPDATE ... WHERE status='pending'`)
+กันกดปุ่ม "ยืนยัน" ซ้ำสร้างเตือนซ้ำสอง — ทดสอบด้วยการยืนยันพร้อมกัน 5 ครั้ง ได้เตือนแค่ชุดเดียว
+
+### ทดสอบ
+
+```bash
+npm run image:probe -- /path/to/appointment.png       # มีค่าใช้จ่ายจริง ~$0.001-0.004/รูป
+```
+
+---
+
 ## กลุ่ม + mention
 
 ### จับคู่ชื่อ → userId (`src/handlers/mentionResolve.ts`)
@@ -562,6 +611,8 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/mentionMessage.test.ts` | สร้าง `textV2` + `substitution` ครบทุกคน, placeholder `{m0}`/`{m1}` ตรงกับ mentionee |
 | `tests/richmenu.test.ts` | ขนาดตรงสเปก, 4 ปุ่มครอบคลุมพื้นที่เต็มพอดีไม่ทับกัน, ทุกปุ่ม decode ได้จริง, deterministic |
 | `tests/settings.test.ts` | **integration กับ Postgres จริง** — ค่าดีฟอลต์จาก env, ปรับเริ่ม/สิ้นสุดแยกกันไม่กระทบกัน, ปิดแล้ว `isInQuietHours` เป็น false ทุกนาที, เปิดกลับด้วยค่าดีฟอลต์ |
+| `tests/resolveImageItem.test.ts` | แปลงวันที่+เวลาจากเอกสารเป็น UTC, รองรับเวลาไทยผ่าน `extractClockMinute` เดียวกับข้อความ, **ช่วงเวลาแบบตารางเวร ("07-15") ใช้จุดเริ่มต้น**, ปีผิดปกติ (พ.ศ./ค.ศ.) → ปฏิเสธ |
+| `tests/draftService.test.ts` | **integration กับ Postgres จริง** — round-trip payload ผ่าน JSON, **ยืนยันพร้อมกัน 5 ครั้งสร้างแค่ชุดเดียว (claim แบบ atomic)**, ข้าม item ที่อ่านไม่ออก, draft หมดอายุ/ของแชทอื่นปฏิเสธ |
 
 > `tests/reminders.test.ts` ต้องมี Postgres รันอยู่ (`docker compose up -d postgres`)
 > `tests/globalSetup.ts` จะรัน migration ลง DB ชื่อ `nami_test` ให้เอง
@@ -596,7 +647,8 @@ src/
 │  │  ├─ reminderConfirm.ts   ยืนยันตอนตั้ง (รองรับทั้งครั้งเดียวและซ้ำ)
 │  │  ├─ reminderFire.ts      ตอนยิง — เสร็จแล้ว/เลื่อน 10 นาที/เลื่อน 1 ชม./ปิด
 │  │  ├─ reminderList.ts      carousel + ปุ่มแก้เวลา/ลบรายตัว
-│  │  └─ vaultSearchResult.ts carousel ผลค้นหา + ปุ่มเปิดลิงก์/ขอไฟล์กลับ
+│  │  ├─ vaultSearchResult.ts carousel ผลค้นหา + ปุ่มเปิดลิงก์/ขอไฟล์กลับ
+│  │  └─ imageReminderReview.ts รายการที่อ่านได้จากรูป + ปุ่มยืนยันทั้งหมด/ไม่ต้อง
 │  ├─ signature.ts      verify X-Line-Signature (timing-safe)
 │  ├─ client.ts         MessagingApiClient + BlobClient
 │  ├─ reply.ts          reply (ฟรี)
@@ -632,8 +684,14 @@ src/
 │  ├─ prompt.ts         system prompt + กฎเวลาไทย
 │  ├─ parse.ts          เรียก NLU + เกณฑ์ถามกลับ
 │  ├─ resolveTime.ts    dueAtLocal → UTC + กฎเวลาที่ผ่านไปแล้ว
-│  └─ thaiTime.ts       ตัวตรวจทานคำบอกเวลาไทย (deterministic)
-├─ reminders/service.ts CRUD การเตือน (ทรานแซกชัน + เช็คว่าเป็นของแชทนั้น)
+│  ├─ thaiTime.ts       ตัวตรวจทานคำบอกเวลาไทย (deterministic)
+│  ├─ imageSchema.ts    zod schema ของผลอ่านรูป (feature 3)
+│  ├─ imagePrompt.ts    system prompt สำหรับ vision
+│  ├─ parseImage.ts     เรียก vision (tier: 'vision') + ตรวจทานทุกรายการ
+│  └─ resolveImageItem.ts ตรวจทานเวลา/วันที่ต่อรายการ (deterministic เหมือน thaiTime.ts)
+├─ reminders/
+│  ├─ service.ts        CRUD การเตือน (ทรานแซกชัน + เช็คว่าเป็นของแชทนั้น)
+│  └─ draftService.ts   ReminderDraft: create/confirm/discard (feature 3)
 ├─ scheduler/
 │  ├─ nextOccurrence.ts คำนวณรอบถัดไป (floating date trick + quiet hours)
 │  ├─ fire.ts           claim → push → sent + กู้แถวค้าง
@@ -768,3 +826,6 @@ npm run db:verify
 | กด rich menu ในกลุ่มไม่เห็นเมนู | ตั้งใจ — ข้อจำกัดของ LINE: rich menu โผล่เฉพาะแชท 1:1 เท่านั้น |
 | `npm run richmenu:setup` หา Chrome ไม่เจอ | ติดตั้ง Google Chrome หรือ Chromium หรือแก้ `CHROME_CANDIDATES` ใน `scripts/setup-richmenu.ts` ให้ตรงกับ path จริง |
 | รันเมนู setup ซ้ำแล้วมีเมนูซ้ำค้างใน LINE Developers Console | ไม่ควรเกิด — สคริปต์ลบของเก่าชื่อเดียวกัน (`RICHMENU_NAME`) ก่อนสร้างใหม่เสมอ ถ้าเจอให้เช็คว่าไม่ได้แก้ `RICHMENU_NAME` เป็นคนละค่าระหว่างรัน |
+| ตั้งเตือนจากรูปตารางเวรได้เวลาผิด (ไม่ตรงหัวคอลัมน์) | เคยเป็นบั๊กตอนโมเดลคัดลอกทั้งช่วงเวลามา ("07-15") ไม่ใช่จุดเดียว — `extractRangeStart()` ใน `resolveImageItem.ts` แก้แล้ว ใช้จุดเริ่มต้นของช่วงเสมอ |
+| ส่งรูปแล้วไม่มี Flex ให้ยืนยันเตือน | ปกติถ้ารูปนั้นไม่ใช่เอกสารที่มีอะไรให้เตือน (docType=other, reminders ว่าง) — นามิจะแค่ตอบว่าเก็บรูปให้แล้วเฉยๆ |
+| `npm run richmenu:setup` ทำงานแบบตรงไปสร้าง/ตั้งเมนูจริงทันที ไม่ถามก่อน | ตั้งใจ — เป็น script ที่ผู้ใช้สั่งรันเองตรงๆ ถือว่าเจตนาชัดเจนแล้ว **ไม่ควรรันคำสั่งนี้ (หรือคำสั่งไหนที่แตะ LINE API จริง) เพื่อ "ทดสอบเฉยๆ" โดยไม่ได้ตั้งใจจะ deploy จริง** โดยเฉพาะถ้า `.env` มี credential จริงอยู่แล้ว |

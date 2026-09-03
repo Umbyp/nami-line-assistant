@@ -8,7 +8,9 @@ import { addStorageBytes } from '../line/usage.js';
 import { embed, isEmbeddingEnabled, toVectorLiteral } from '../llm/embed.js';
 
 export type SaveResult =
-  | { ok: true; item: VaultItem }
+  // buffer แนบมาด้วยตอนสำเร็จ (ใช้กับ media เท่านั้น — text/link เป็น undefined)
+  // เพื่อให้ผู้เรียกใช้ต่อได้โดยไม่ต้องดาวน์โหลดจาก LINE ซ้ำอีกรอบ (เช่น feature 3 อ่านรูปตั้งเตือน)
+  | { ok: true; item: VaultItem; buffer?: Buffer }
   | { ok: false; reason: 'quota_exceeded'; usedBytes: number; limitBytes: number }
   | { ok: false; reason: 'download_failed' | 'upload_failed'; detail: string };
 
@@ -183,7 +185,7 @@ export async function saveMediaItem(input: SaveMediaInput): Promise<SaveResult> 
   );
 
   logger.info({ itemId: item.id, chatId: input.chatId, kind: input.kind, bytes: buffer.length }, 'เก็บไฟล์ลง vault');
-  return { ok: true, item };
+  return { ok: true, item, buffer };
 }
 
 function defaultTitleFor(kind: VaultKind): string {

@@ -20,6 +20,9 @@ import { vaultSearchResult } from '../line/flex/vaultSearchResult.js';
 import { mimeForFileName, mimeForMessageType } from '../vault/mime.js';
 import { resolveAssignees } from './mentionResolve.js';
 import { UNKNOWN_SENDER } from '../copy.js';
+import { parseImageForReminders } from '../nlu/parseImage.js';
+import { createReminderDraft, confirmableItems } from '../reminders/draftService.js';
+import { imageReminderReview } from '../line/flex/imageReminderReview.js';
 import type { ChatContext } from './context.js';
 import type { NluResult } from '../nlu/schema.js';
 
@@ -245,13 +248,62 @@ async function handleMediaMessage(
   // ตอบกลับเฉพาะแชท 1:1 — ในกลุ่มเก็บเงียบๆ กันสแปม (เหมือนกติกาอื่นในกลุ่ม)
   if (!replyToken || ctx.isGroup) return;
 
-  if (out.ok) {
-    await reply(replyToken, [
-      textMessage(`เก็บ${isFile ? 'ไฟล์' : 'รูป'}ไว้ให้แล้วนะ ค้นหาทีหลังได้เลย`),
-    ]);
-  } else {
+  if (!out.ok) {
     await reply(replyToken, [textMessage(vaultFailureText(out))]);
+    return;
   }
+
+  // รูป (ไม่ใช่ไฟล์): ลองอ่านเป็นตารางเรียน/ใบนัด/ตารางเวร ก่อนตอบแค่ "เก็บให้แล้ว" เฉยๆ
+  // ใช้ buffer ที่ saveMediaItem ดาวน์โหลดมาแล้ว ไม่ต้องขอจาก LINE ซ้ำอีกรอบ
+  if (!isFile && out.buffer) {
+    const reviewed = await tryReviewImageAsReminders(out.buffer, mime, replyToken, ctx);
+    if (reviewed) return;
+  }
+
+  await reply(replyToken, [textMessage(`เก็บ${isFile ? 'ไฟล์' : 'รูป'}ไว้ให้แล้วนะ ค้นหาทีหลังได้เลย`)]);
+}
+
+/**
+ * feature 3: อ่านรูปด้วย vision แล้วเสนอรายการเตือนให้ยืนยันก่อนบันทึก
+ *
+ * คืน true ถ้าตอบกลับไปแล้ว (เจอบางอย่างที่ควรเตือน หรือมีจุดที่ไม่มั่นใจต้องแจ้ง)
+ * คืน false ถ้าไม่เจออะไรเลย (ให้ caller ไปตอบข้อความ "เก็บรูปให้แล้ว" ปกติแทน — replyToken ยังไม่ถูกใช้)
+ *
+ * เรียก vision ทุกรูปที่ส่งเข้ามา (ไม่ใช่แค่ตอนขอชัดเจน) เพราะสเปกต้องการให้ตรวจจับเองว่า
+ * "รูปนี้เป็นเอกสารที่ควรตั้งเตือนไหม" — ต้นทุนต่อรูปคำนวณไว้แล้วในค่าใช้จ่ายรวมของระบบ (ดู README)
+ */
+async function tryReviewImageAsReminders(
+  buffer: Buffer,
+  mime: string,
+  replyToken: string,
+  ctx: ChatContext,
+): Promise<boolean> {
+  if (!ctx.senderUserId) return false;
+
+  const out = await parseImageForReminders(buffer.toString('base64'), mime, {
+    scopeId: ctx.lineChatId,
+  });
+
+  if (!out.ok) {
+    logger.warn({ reason: out.reason, detail: out.detail }, 'อ่านรูปเป็นเตือนไม่สำเร็จ');
+    return false;
+  }
+
+  const ok = confirmableItems(out.items);
+  if (ok.length === 0 && out.unclearNotes.length === 0) {
+    // ไม่ใช่เอกสารที่มีอะไรให้เตือน (เช่นรูปถ่ายทั่วไป) — เงียบ ให้ข้อความ "เก็บรูปให้แล้ว" ตามปกติพอ
+    return false;
+  }
+
+  const draft = await createReminderDraft({
+    chatId: ctx.chat.id,
+    createdBy: ctx.senderUserId,
+    items: out.items,
+    unclearNotes: out.unclearNotes,
+  });
+
+  await reply(replyToken, [imageReminderReview(draft)]);
+  return true;
 }
 
 function vaultFailureText(out: { reason: string; usedBytes?: number; limitBytes?: number }): string {

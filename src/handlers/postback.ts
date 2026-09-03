@@ -29,6 +29,7 @@ import {
   setQuietHour,
 } from './settings.js';
 import { UNKNOWN_SENDER, REMINDER_NOT_FOUND } from '../copy.js';
+import { confirmReminderDraft, discardReminderDraft } from '../reminders/draftService.js';
 import type { ChatContext } from './context.js';
 
 export async function handlePostbackEvent(
@@ -253,6 +254,37 @@ export async function handlePostbackEvent(
       await reply(replyToken, [settingsView(user)]);
       return;
     }
+
+    // ── ยืนยัน/ยกเลิกเตือนที่อ่านได้จากรูป (feature 3) ──
+    case 'draft.confirm': {
+      if (!replyToken) return;
+      const out = await confirmReminderDraft(action.id, ctx.chat.id);
+      if (!out.ok) {
+        await reply(replyToken, [textMessage(draftFailureText(out.reason))]);
+        return;
+      }
+      // รอบแรกของแต่ละอันอาจอยู่ใน 1 ชม. ข้างหน้า → enqueue ทันที ไม่ต้องรอ sweeper
+      await enqueueDueOccurrences().catch((err) =>
+        logger.warn({ err }, 'enqueue หลังยืนยัน draft ไม่สำเร็จ (sweeper จะเก็บให้)'),
+      );
+      await reply(replyToken, [
+        textMessage(
+          out.skipped > 0
+            ? `บันทึกแล้ว ${out.created.length} รายการ (อีก ${out.skipped} รายการสร้างไม่สำเร็จ)`
+            : `บันทึกแล้ว ${out.created.length} รายการ 👍`,
+        ),
+      ]);
+      return;
+    }
+
+    case 'draft.discard': {
+      if (!replyToken) return;
+      const removed = await discardReminderDraft(action.id, ctx.chat.id);
+      await reply(replyToken, [
+        textMessage(removed ? 'ไม่เก็บนะ ทิ้งแล้ว' : 'รายการนี้ถูกจัดการไปแล้ว'),
+      ]);
+      return;
+    }
   }
 }
 
@@ -309,4 +341,15 @@ function readPickerTime(params: unknown): number | null {
   const min = Number(m[2]);
   if (h > 23 || min > 59) return null;
   return h * 60 + min;
+}
+
+function draftFailureText(reason: 'not_found' | 'expired' | 'already_handled'): string {
+  switch (reason) {
+    case 'expired':
+      return 'รูปนี้ผ่านมานานแล้ว ลองส่งรูปใหม่อีกทีนะ';
+    case 'already_handled':
+      return 'รายการนี้ถูกจัดการไปแล้ว';
+    default:
+      return 'ไม่เจอรายการนี้แล้ว อาจถูกจัดการไปแล้ว';
+  }
 }

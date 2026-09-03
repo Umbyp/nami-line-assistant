@@ -1,4 +1,14 @@
+import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+
+/**
+ * โหลด .env อัตโนมัติก่อน validate — ไม่งั้นทุกครั้งที่รันสคริปต์ (npm run richmenu:setup,
+ * npm run dev ฯลฯ) นอก docker compose ต้อง `source .env` มือเองก่อนเสมอ ซึ่งไม่มีใครจำได้
+ *
+ * dotenv ไม่ทับค่าที่ตั้งไว้ใน process.env อยู่แล้ว (เช่นตอน deploy จริงที่ inject env
+ * ผ่าน platform ไม่ได้มีไฟล์ .env) จึงปลอดภัยเรียกไว้ตรงนี้เสมอโดยไม่ต้องเช็ค NODE_ENV
+ */
+loadDotenv();
 
 /**
  * validate env ตอน boot ครั้งเดียว — ถ้าขาดตัวไหนให้ตายทันที
