@@ -10,8 +10,12 @@ generator client {
 }
 
 datasource db {
-  provider   = "postgresql"
+  provider = "postgresql"
+  // url  = connection ที่แอปใช้ query (บน Supabase ให้ชี้ pooler port 6543 + ?pgbouncer=true)
+  // directUrl = connection ที่ prisma migrate ใช้ (ต้องไม่ผ่าน pooler)
+  // ตอน dev บน Postgres ใน docker ให้ตั้งทั้งสองค่าเหมือนกันได้
   url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
   extensions = [pg_trgm, vector, unaccent]
 }
 
@@ -114,7 +118,8 @@ model GroupMember {
   lastSeenAt  DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
 
   chat Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  user User? @relation(fields: [lineUserId], references: [lineUserId], onDelete: SetNull)
+  // Restrict ไม่ใช่ SetNull เพราะ lineUserId เป็นส่วนหนึ่งของ primary key จึง null ไม่ได้
+  user User? @relation(fields: [lineUserId], references: [lineUserId], onDelete: Restrict)
 
   @@id([chatId, lineUserId])
   @@index([chatId, displayName])
@@ -155,7 +160,8 @@ model Reminder {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   chat        Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  creator     User?                @relation("reminder_creator", fields: [createdBy], references: [lineUserId], onDelete: SetNull)
+  // Restrict: ห้ามลบ user ที่ยังมีการเตือนค้างอยู่ (createdBy เป็น required จึง SetNull ไม่ได้)
+  creator     User?                @relation("reminder_creator", fields: [createdBy], references: [lineUserId], onDelete: Restrict)
   occurrences ReminderOccurrence[]
 
   // index หลักของ scheduler: กวาดหา reminder ที่ต้องสร้าง occurrence ถัดไป
@@ -232,17 +238,24 @@ model VaultItem {
 
   // full-text: generated column (tsvector) จัดการใน migration SQL
   searchTsv Unsupported("tsvector")? @map("search_tsv")
-  // semantic: pgvector — null ได้ถ้าไม่ได้ตั้ง VOYAGE_API_KEY
-  embedding Unsupported("vector(1024)")?
+  // semantic: pgvector — null ได้ถ้าไม่ได้ตั้ง OPENROUTER_API_KEY
+  // 1536 มิติ = openai/text-embedding-3-small ผ่าน OpenRouter
+  // ต้องตรงกับ EMBEDDING_DIMENSIONS ใน env เสมอ (embed.ts เช็คให้)
+  embedding Unsupported("vector(1536)")?
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   chat    Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  creator User? @relation("vault_creator", fields: [createdBy], references: [lineUserId], onDelete: SetNull)
+  // Restrict: ของใน vault ไม่มีวันหมดอายุตามสัญญากับผู้ใช้ ห้ามหลุดหายเพราะลบ user
+  creator User? @relation("vault_creator", fields: [createdBy], references: [lineUserId], onDelete: Restrict)
 
   @@index([chatId, createdAt])
   @@index([chatId, kind])
+  // ประกาศ GIN index ไว้ใน schema ด้วย (ไม่ปล่อยให้เป็น raw SQL อย่างเดียว)
+  // เพราะ prisma migrate diff จะสั่ง DROP index ที่มันไม่รู้จักทุกครั้ง
+  @@index([searchTsv], type: Gin)
+  @@index([tags], type: Gin)
   @@map("vault_items")
 }
 
@@ -255,6 +268,10 @@ model UsageCounter {
   pushCount    Int    @default(0) @map("push_count")
   llmTokens    Int    @default(0) @map("llm_tokens")
   storageBytes BigInt @default(0) @map("storage_bytes")
+
+  // OpenRouter คืน usage.cost เป็น USD จริงของทุก request
+  // เก็บเป็น Decimal ไม่ใช่ Float เพราะต้องเอาไปคิดเงินและรวมยอด
+  llmCostUsd Decimal @default(0) @map("llm_cost_usd") @db.Decimal(14, 8)
 
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 

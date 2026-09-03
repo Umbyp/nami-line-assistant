@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
 import { monthKey } from '../lib/time.js';
@@ -17,14 +18,25 @@ export async function incrementPush(scopeId: string, count = 1): Promise<void> {
   });
 }
 
-export async function incrementLlmTokens(scopeId: string, tokens: number): Promise<void> {
-  if (tokens <= 0) return;
+/**
+ * บันทึกทั้ง token และต้นทุน USD จริง
+ * OpenRouter คืน usage.cost มาให้ทุก request → เราไม่ต้องเดาราคาจากตารางราคาเอง
+ * ซึ่งสำคัญเพราะราคาต่อโมเดลเปลี่ยนได้ และเราสลับโมเดลตาม tier อยู่แล้ว
+ */
+export async function recordLlmUsage(
+  scopeId: string,
+  tokens: number,
+  costUsd: number,
+): Promise<void> {
+  if (tokens <= 0 && costUsd <= 0) return;
   const month = monthKey();
+  const cost = new Prisma.Decimal(costUsd);
   await prisma.usageCounter.upsert({
     where: { scopeId_month: { scopeId, month } },
-    create: { scopeId, month, llmTokens: tokens },
-    update: { llmTokens: { increment: tokens } },
+    create: { scopeId, month, llmTokens: tokens, llmCostUsd: cost },
+    update: { llmTokens: { increment: tokens }, llmCostUsd: { increment: cost } },
   });
+  logCost('llm', scopeId, costUsd);
 }
 
 export async function addStorageBytes(scopeId: string, bytes: number): Promise<void> {
@@ -59,7 +71,31 @@ export async function getPushQuota(scopeId: string, plan: Plan): Promise<QuotaSt
   return { used, limit, exceeded: used >= limit, nearLimit: used >= limit * 0.8 };
 }
 
-/** log ต้นทุนแยกออกมาเพื่อให้ดึงไปทำ dashboard ได้ง่าย */
+/**
+ * log ต้นทุนแยกออกมาเพื่อให้ดึงไปทำ dashboard ได้ง่าย
+ * push นับเป็น "จำนวนข้อความ" ส่วน llm นับเป็น "USD"
+ */
 export function logCost(kind: 'push' | 'llm' | 'storage', scopeId: string, amount: number): void {
   logger.info({ cost: { kind, scopeId, amount } }, 'cost');
+}
+
+/** สรุปต้นทุนของเดือนปัจจุบัน ใช้ตอบใน /debug และหน้าตั้งค่าทีหลัง */
+export async function getMonthlyUsage(scopeId: string): Promise<{
+  month: string;
+  pushCount: number;
+  llmTokens: number;
+  llmCostUsd: string;
+  storageBytes: string;
+}> {
+  const month = monthKey();
+  const row = await prisma.usageCounter.findUnique({
+    where: { scopeId_month: { scopeId, month } },
+  });
+  return {
+    month,
+    pushCount: row?.pushCount ?? 0,
+    llmTokens: row?.llmTokens ?? 0,
+    llmCostUsd: (row?.llmCostUsd ?? new Prisma.Decimal(0)).toString(),
+    storageBytes: (row?.storageBytes ?? 0n).toString(),
+  };
 }

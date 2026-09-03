@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { env } from '../config/env.js';
 import { prisma } from '../lib/prisma.js';
 import { redis } from '../lib/redis.js';
 import { lineClient } from '../line/client.js';
+import { env } from '../config/env.js';
+import { isLlmConfigured } from '../llm/client.js';
+import { isEmbeddingEnabled } from '../llm/embed.js';
 
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
   /** liveness — ต้องเบาที่สุด ไม่แตะ dependency */
@@ -121,6 +123,105 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
           timezone: env.APP_TIMEZONE,
         },
       });
+    });
+
+    /**
+     * ตรวจการตั้งค่า LLM: key ใช้ได้ไหม เครดิตเหลือเท่าไหร่ โมเดลที่ตั้งไว้มีจริงไหม
+     * ไม่ยิง completion จริงเพื่อไม่ให้เสียเงินตอนเช็ค — ถ้าอยากยิงจริงใส่ ?probe=1
+     */
+    app.get('/debug/llm-config', async (req, reply) => {
+      const problems: string[] = [];
+      const result: Record<string, unknown> = {
+        configured: isLlmConfigured(),
+        embeddingEnabled: isEmbeddingEnabled(),
+        baseUrl: env.OPENROUTER_BASE_URL,
+        models: {
+          text: env.LLM_MODEL_TEXT,
+          vision: env.LLM_MODEL_VISION,
+          embed: env.LLM_MODEL_EMBED,
+        },
+        embeddingDimensions: env.EMBEDDING_DIMENSIONS,
+        nluConfidenceThreshold: env.NLU_CONFIDENCE_THRESHOLD,
+      };
+
+      if (!isLlmConfigured()) {
+        problems.push('ยังไม่ได้ตั้ง OPENROUTER_API_KEY → NLU และการอ่านรูปจะใช้ไม่ได้');
+        return reply.send({ ok: false, ...result, problems });
+      }
+
+      const auth = { Authorization: `Bearer ${env.OPENROUTER_API_KEY}` };
+
+      // ── key ใช้ได้ไหม + เครดิต ──
+      try {
+        const r = await fetch(`${env.OPENROUTER_BASE_URL}/key`, { headers: auth });
+        if (!r.ok) {
+          problems.push(`เรียก /key ไม่สำเร็จ (HTTP ${r.status}) → key ผิดหรือถูกเพิกถอน`);
+        } else {
+          const body = (await r.json()) as { data?: Record<string, unknown> };
+          const d = body.data ?? {};
+          result.key = {
+            label: d['label'],
+            usageUsd: d['usage'],
+            limitUsd: d['limit'],
+            limitRemainingUsd: d['limit_remaining'],
+            isFreeTier: d['is_free_tier'],
+          };
+          if (d['limit'] == null) {
+            problems.push(
+              'key นี้ไม่ได้ตั้ง spend limit → ถ้า key รั่วจะถูกใช้ได้ไม่จำกัด ' +
+                'ตั้งได้ที่ https://openrouter.ai/settings/limits',
+            );
+          }
+          const remaining = d['limit_remaining'];
+          if (typeof remaining === 'number' && remaining <= 0) {
+            problems.push('เครดิตหมด → ทุก request จะถูกปฏิเสธ');
+          }
+        }
+      } catch (err) {
+        problems.push(`ต่อ OpenRouter ไม่ได้: ${(err as Error).message}`);
+      }
+
+      // ── โมเดลที่ตั้งไว้มีจริงไหม (สะกดผิดคือสาเหตุพังที่พบบ่อยที่สุด) ──
+      try {
+        const r = await fetch(`${env.OPENROUTER_BASE_URL}/models`, { headers: auth });
+        const body = (await r.json()) as { data?: Array<{ id: string; architecture?: { input_modalities?: string[] } }> };
+        const all = body.data ?? [];
+        const byId = new Map(all.map((m) => [m.id, m]));
+
+        for (const [tier, id] of [
+          ['text', env.LLM_MODEL_TEXT],
+          ['vision', env.LLM_MODEL_VISION],
+        ] as const) {
+          const m = byId.get(id);
+          if (!m) {
+            problems.push(`โมเดล ${tier} = "${id}" ไม่มีอยู่ใน OpenRouter (สะกดผิด?)`);
+          } else if (tier === 'vision' && !(m.architecture?.input_modalities ?? []).includes('image')) {
+            problems.push(`โมเดล vision = "${id}" รับ input เป็นรูปไม่ได้ → ฟีเจอร์ตั้งเตือนจากรูปจะพัง`);
+          }
+        }
+        result.modelCatalogSize = all.length;
+      } catch (err) {
+        problems.push(`ดึงรายการโมเดลไม่ได้: ${(err as Error).message}`);
+      }
+
+      // ── ยิงจริงเมื่อขอมาเท่านั้น (มีค่าใช้จ่าย) ──
+      if ((req.query as Record<string, unknown>)?.['probe'] === '1') {
+        const { completeStructured } = await import('../llm/chat.js');
+        const { z } = await import('zod');
+        const probe = await completeStructured({
+          name: 'probe',
+          schema: z.object({ ok: z.boolean(), thai: z.string() }),
+          system: 'ตอบเป็น JSON: {"ok": true, "thai": "สวัสดี"}',
+          user: 'ทดสอบ',
+          maxTokens: 64,
+        });
+        result.probe = probe.ok
+          ? { ok: true, data: probe.data, costUsd: probe.costUsd, model: probe.model }
+          : { ok: false, reason: probe.reason, detail: probe.detail };
+        if (!probe.ok) problems.push(`ยิงทดสอบไม่ผ่าน: ${probe.reason} — ${probe.detail}`);
+      }
+
+      return reply.send({ ok: problems.length === 0, ...result, problems });
     });
   }
 }

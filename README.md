@@ -12,6 +12,7 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 | Phase | ขอบเขต | สถานะ |
 |-------|--------|-------|
 | **P1** | webhook + signature verify + echo + docker compose | ✅ เสร็จ |
+| **P1.5** | ชั้น LLM (OpenRouter) + บันทึกต้นทุน USD จริง | ✅ เสร็จ |
 | P2 | NLU + ตั้งเตือนรายครั้ง + Flex ยืนยัน | ⬜ |
 | P3 | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ⬜ |
 | P4 | vault เก็บ + ค้นหา | ⬜ |
@@ -37,12 +38,16 @@ npm install
 cp .env.example .env
 ```
 
-แล้วเติม 2 ค่านี้เป็นอย่างน้อย (ดูวิธีหาในหัวข้อ [ตั้งค่า LINE OA](#ตั้งค่า-line-oa)):
+แล้วเติม 3 ค่านี้เป็นอย่างน้อย:
 
 ```
-LINE_CHANNEL_SECRET=...
+LINE_CHANNEL_SECRET=...        # ดู "ตั้งค่า LINE OA" ด้านล่าง
 LINE_CHANNEL_ACCESS_TOKEN=...
+OPENROUTER_API_KEY=...         # https://openrouter.ai/settings/keys
 ```
+
+> **ตั้ง spend limit ให้ OpenRouter key ด้วย** ที่ https://openrouter.ai/settings/limits
+> key ที่ไม่มี limit ถ้ารั่วจะถูกใช้ได้ไม่จำกัด — `/debug/llm-config` จะเตือนถ้ายังไม่ตั้ง
 
 ### 3. ยก infra ขึ้น (Postgres + Redis + MinIO)
 
@@ -138,6 +143,60 @@ endpoint นี้จะ:
 
 ---
 
+## ชั้น LLM (OpenRouter)
+
+ใช้ **OpenRouter** เจ้าเดียวทั้ง NLU, อ่านรูป และ embeddings เรียกผ่าน `openai` SDK ที่ชี้ `baseURL`
+ไปที่มัน (OpenRouter พูดภาษาเดียวกับ OpenAI API) ถ้าจะย้าย provider ทีหลังแก้ที่ `src/llm/client.ts` ไฟล์เดียว
+
+### ทำไมต้องใช้ 2 โมเดล
+
+วัดผลจริงด้วย `npm run llm:bench` และการอ่านรูปเอกสารไทย:
+
+| งาน | โมเดล | ผล | ราคา |
+|---|---|---|---|
+| NLU ข้อความไทย | `google/gemini-2.5-flash-lite` | 6/6 | ~$0.00005/ครั้ง |
+| ใบนัดหมอ (แปลง พ.ศ. → ค.ศ., แยก 2 นัด) | flash-lite | ✅ | ~$0.0003/รูป |
+| **ตารางเวร (หลายคอลัมน์)** | flash-lite | ❌ **อ่านข้ามคอลัมน์** | |
+| ตารางเวรตัวเดียวกัน | `google/gemini-2.5-flash` | ✅ 4/4 | ~$0.0015/รูป |
+
+จึงตั้งเป็น 2 ตัวแยกกัน (`LLM_MODEL_TEXT` / `LLM_MODEL_VISION`) — **อย่ารวมเป็นตัวเดียวเพื่อประหยัด**
+ถ้าจะเปลี่ยนโมเดล ให้รัน `npm run llm:bench -- <model-id>` เทียบก่อนเสมอ
+
+โมเดล `:free` ใช้ไม่ได้: `minimax/minimax-m3:free` ไม่เคารพ `json_schema` (ห่อ ```json, ทิ้ง field ที่บังคับ),
+`google/gemma-4-31b-it:free` ตอบ HTTP 429 ทันที
+
+### กฎการเรียก LLM
+
+`completeStructured()` ใน `src/llm/chat.ts` เป็นทางเดียวที่อนุญาตให้เรียกโมเดล มันการันตี 3 อย่าง:
+
+1. **ไม่ throw** — คืน discriminated union `{ ok: true, data }` หรือ `{ ok: false, reason, detail }`
+2. **ไม่เดา** — output ต้องผ่าน zod เท่านั้น ถ้าไม่ผ่านคืน `ok: false` ให้ผู้เรียกไปถามผู้ใช้กลับ
+3. **บันทึกต้นทุนเสมอ** — รวมตอนที่ผลลัพธ์ใช้ไม่ได้ เพราะเราจ่ายเงินไปแล้วจริง
+
+มี repair pass 1 ครั้ง (ส่ง error กลับไปให้โมเดลแก้) เกินกว่านั้นไม่คุ้มทั้งเวลาและเงิน
+`api_error` ไม่ repair — ปล่อยให้ BullMQ retry ชั้นนอกจัดการ
+
+zod schema ที่ส่งเข้า `completeStructured` ต้องใช้ `.nullable()` ไม่ใช่ `.optional()`
+เพราะ strict mode บังคับว่าทุก property ต้องอยู่ใน `required` (`toStrictJsonSchema` แปลงให้อัตโนมัติ)
+
+### ต้นทุนจริง ไม่ใช่ค่าประมาณ
+
+OpenRouter แนบ `usage.cost` (USD ของ request นั้น) มาทุกครั้ง เราเก็บลง
+`usage_counters.llm_cost_usd` เป็น `DECIMAL(14,8)` → ไม่ต้องเดาราคาจากตารางราคาเอง
+ซึ่งสำคัญเพราะเราสลับโมเดลตาม tier และราคาต่อโมเดลเปลี่ยนได้
+
+### ตรวจการตั้งค่า
+
+```bash
+curl -s localhost:3100/debug/llm-config | jq          # ไม่เสียเงิน
+curl -s 'localhost:3100/debug/llm-config?probe=1' | jq  # ยิงจริง เสียเงินหลักเศษสตางค์
+```
+
+เช็คให้: key ใช้ได้ไหม, เครดิต/spend limit, โมเดลที่ตั้งไว้มีจริงไหม (สะกดผิดคือสาเหตุพังที่พบบ่อยสุด),
+และ **โมเดล vision รับ input เป็นรูปได้จริงไหม**
+
+---
+
 ## ทดสอบโดยไม่ต้องมี LINE จริง
 
 `scripts/send-webhook.ts` ยิง webhook ปลอมเข้าเครื่องตัวเอง **พร้อมเซ็น `X-Line-Signature` ให้ถูกต้อง**
@@ -189,6 +248,16 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/time.test.ts` | เวลาไทย vs UTC ข้ามวัน/ข้ามเดือน, quiet hours ที่ข้ามเที่ยงคืน, การเลื่อนเวลาออกจากช่วงเงียบ, การแสดงผลภาษาไทย |
 | `tests/groupGate.test.ts` | กติกา "ในกลุ่มตอบเฉพาะเมื่อถูกเรียก", ตัด mention หลายตำแหน่งโดย index ไม่เพี้ยน, ไม่ตอบเมื่อ mention คนอื่น |
 | `tests/webhook.test.ts` | 401 เมื่อ signature ผิด/ไม่มี, 200 + enqueue เมื่อถูก, `jobId = webhookEventId`, 500 เมื่อ enqueue พังเพื่อให้ LINE retry |
+| `tests/llm.test.ts` | zod ไม่ผ่าน → `ok:false` ไม่เดาค่า, repair pass 1 ครั้ง, `api_error` ไม่ repair, บันทึกต้นทุนแม้ผลลัพธ์พัง, `toStrictJsonSchema` บังคับ `additionalProperties:false` + `required` ทุก key |
+
+### ตรวจโครงสร้าง DB ที่ Prisma จัดการแทนไม่ได้
+
+```bash
+npm run db:verify
+```
+
+เช็คว่า trigger, expression index (trgm) และ HNSW index ยังอยู่ครบ
+**ต้องรันทุกครั้งหลัง generate migration ใหม่** — ดูเหตุผลใน "กับดักของ Prisma" ด้านล่าง
 
 ---
 
@@ -213,6 +282,11 @@ src/
 │  ├─ server.ts         Fastify + parser ที่เก็บ raw body ไว้คำนวณ signature
 │  ├─ routes.ts         POST /webhook — verify → enqueue → 200
 │  └─ health.ts         /healthz /readyz /debug/line-config
+├─ llm/
+│  ├─ client.ts         openai SDK ชี้ไป OpenRouter + อ่าน usage.cost
+│  ├─ chat.ts           completeStructured() — ทางเดียวที่เรียกโมเดลได้
+│  ├─ embed.ts          embeddings + เช็คมิติให้ตรงกับ DB
+│  └─ jsonSchema.ts     zod → JSON Schema แบบ strict
 ├─ queue/queues.ts      BullMQ: events / reminder-fire / scheduler
 ├─ handlers/
 │  ├─ index.ts          กระจาย event ตามชนิด
@@ -269,9 +343,37 @@ LINE ไม่ให้ list สมาชิกกลุ่ม (ถ้าไม�
 - Anthropic API ไม่มี embeddings endpoint → ใช้ **Voyage AI** (`voyage-3`, 1024 dims)
   ถ้าไม่ตั้ง `VOYAGE_API_KEY` ระบบจะ fallback ไปใช้ full-text + trgm เพียงอย่างเดียว (semantic หายไป แต่ยังใช้ได้)
 
+### กับดักของ Prisma ที่ต้องระวังทุกครั้ง
+
+`prisma migrate diff` **มองไม่เห็น** 3 อย่างนี้ และจะสั่ง `DROP` หรือละเลยมันทุกครั้งที่ generate migration:
+
+| ของ | อาการ | ทางแก้ |
+|---|---|---|
+| HNSW index บน `embedding` | ถูก `DROP` ทุกครั้ง | เติม `CREATE INDEX ... USING hnsw` ท้าย migration กลับไปเสมอ |
+| การเปลี่ยนมิติ `Unsupported("vector(N)")` | ถูกละเลยเงียบๆ | เขียน `ALTER TABLE` เอง |
+| trigger + expression index (trgm) | ถูกละเลย (ยังอยู่ แต่ diff ไม่รู้จัก) | ปล่อยไว้ได้ |
+
+GIN index บน `search_tsv` และ `tags` ย้ายเข้าไปประกาศใน schema แล้ว (`@@index([...], type: Gin)`)
+จึงไม่ drift อีก
+
+**หลัง generate migration ใหม่ทุกครั้ง:**
+
+```bash
+npm run db:verify
+```
+
+ถ้ามีอะไรหาย มันจะบอกว่าหายอะไรและ exit code ไม่ใช่ 0
+
 ### LLM
 ทุกครั้งที่เรียก LLM ต้อง validate output ด้วย zod และมี fallback ถ้า parse ไม่ได้ —
-**ถามผู้ใช้กลับ อย่าเดา** (บังคับใช้ตั้งแต่ P2)
+**ถามผู้ใช้กลับ อย่าเดา** บังคับใช้ผ่าน `completeStructured()` แล้ว
+
+**สิ่งที่ต้องแก้ใน P2 (พบจาก bench):** `confidence` จากโมเดล **ไม่เสถียร**
+ข้อความกำกวมเดียวกัน (`"เตือนตอนเย็นๆ นะ"`) รอบหนึ่งได้ 0.5 อีกรอบได้ 0.7
+→ พึ่ง `NLU_CONFIDENCE_THRESHOLD` ตัวเดียวไม่พอ
+schema ของ P2 ต้องมี field `ambiguousFields: string[]` ที่บังคับให้โมเดลระบุออกมาตรงๆ
+ว่าอะไรกำกวม แล้วถามกลับตามนั้น ไม่ใช่ตัดสินจากตัวเลข confidence อย่างเดียว
+(bench ยังพบว่ามันตั้ง `title` เป็น `"เย็นๆ"` ซึ่งเอาวลีบอกเวลามาเป็นชื่อเรื่อง)
 
 ---
 
@@ -286,3 +388,8 @@ LINE ไม่ให้ list สมาชิกกลุ่ม (ถ้าไม�
 | นามิไม่ตอบในกลุ่ม | ตั้งใจ — ในกลุ่มต้อง `@นามิ` หรือขึ้นต้นด้วย "นามิ" |
 | มีข้อความอื่นตอบทับนามิ | ยังไม่ปิด "การตอบกลับอัตโนมัติ" ใน LINE OA Manager |
 | `Queue name cannot contain ':'` | BullMQ ใช้ `:` เป็นตัวคั่น redis key ให้จัด namespace ด้วย option `prefix` |
+| LLM คืน `not_configured` | ยังไม่ได้ตั้ง `OPENROUTER_API_KEY` |
+| LLM คืน `schema_mismatch` ตลอด | โมเดลที่ตั้งไว้ไม่รองรับ `json_schema` strict — เช็คด้วย `/debug/llm-config` แล้วเปลี่ยนโมเดล |
+| embedding พังตอน insert | `EMBEDDING_DIMENSIONS` ไม่ตรงกับ `vector(N)` ใน DB — รัน `npm run db:verify` |
+| ต่อ Supabase ไม่ได้จากเน็ตองค์กร | `db.<ref>.supabase.co` เป็น IPv6-only และเน็ตองค์กรมักบล็อก outbound 5432/6543 — dev ให้ใช้ Postgres ใน docker แล้วต่อ Supabase ตอน deploy |
+| `.env` sourcing พังใน shell | ค่าที่มีช่องว่างต้องครอบ quote เช่น `OPENROUTER_APP_NAME="Nami LINE Assistant"` |

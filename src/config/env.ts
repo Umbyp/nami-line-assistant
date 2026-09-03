@@ -27,12 +27,24 @@ const schema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: boolish.default('true'),
 
-  ANTHROPIC_API_KEY: z.string().default(''),
-  ANTHROPIC_MODEL: z.string().default('claude-sonnet-5'),
+  // ── OpenRouter (OpenAI-compatible) ──
+  // ใช้ provider เดียวทั้ง chat และ embeddings
+  OPENROUTER_API_KEY: z.string().default(''),
+  OPENROUTER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
+  // OpenRouter ขอให้ส่ง 2 header นี้เพื่อระบุแอป (ใช้ใน dashboard/leaderboard)
+  OPENROUTER_APP_URL: z.string().default('https://github.com/nami-line-assistant'),
+  OPENROUTER_APP_NAME: z.string().default('Nami LINE Assistant'),
 
-  VOYAGE_API_KEY: z.string().default(''),
-  VOYAGE_MODEL: z.string().default('voyage-3'),
-  EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1024),
+  // โมเดลแยกตามงาน — วัดผลจริงแล้วว่าตัวถูกอ่านตารางในรูปพลาด (ดู README)
+  LLM_MODEL_TEXT: z.string().default('google/gemini-2.5-flash-lite'),
+  LLM_MODEL_VISION: z.string().default('google/gemini-2.5-flash'),
+  LLM_MODEL_EMBED: z.string().default('openai/text-embedding-3-small'),
+
+  // ต้องตรงกับ vector(N) ใน migration ของ vault_items ไม่งั้น insert จะพัง
+  EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
+
+  // ถ้า confidence จาก NLU ต่ำกว่านี้ → ถามผู้ใช้กลับ ห้ามเดา
+  NLU_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
 
   APP_TIMEZONE: z.string().default('Asia/Bangkok'),
 
