@@ -18,6 +18,7 @@ import { saveLinkItem, saveMediaItem, saveTextItem } from '../vault/service.js';
 import { searchVault } from '../vault/search.js';
 import { vaultSearchResult } from '../line/flex/vaultSearchResult.js';
 import { mimeForFileName, mimeForMessageType } from '../vault/mime.js';
+import { resolveAssignees } from './mentionResolve.js';
 import type { ChatContext } from './context.js';
 import type { NluResult } from '../nlu/schema.js';
 
@@ -331,6 +332,10 @@ async function handleCreateReminder(
     return;
   }
 
+  const assignees = ctx.isGroup
+    ? await resolveAssignees(ctx.chat.id, draft.assigneeNames)
+    : { resolved: [], unresolved: [] };
+
   const reminder = await createOnceReminder({
     chatId: ctx.chat.id,
     createdBy: ctx.senderUserId,
@@ -338,6 +343,7 @@ async function handleCreateReminder(
     note: draft.note,
     dueAtUtc: verified.dueAtUtc,
     source: 'text',
+    mentionUserIds: assignees.resolved.map((a) => a.userId),
   });
 
   await reply(replyToken, [
@@ -347,8 +353,8 @@ async function handleCreateReminder(
       note: reminder.note,
       dueAtUtc: verified.dueAtUtc,
       shiftedDays: due.shiftedDays,
-      // P5 จะ map assigneeNames → userId จริง ตอนนี้ยังไม่ mention
-      unknownAssignees: ctx.isGroup && draft.assigneeNames.length > 0 ? draft.assigneeNames : [],
+      assigneeLabels: assignees.resolved.map((a) => a.displayName),
+      unknownAssignees: assignees.unresolved,
     }),
   ]);
 }
@@ -397,6 +403,9 @@ async function handleCreateRecurring(
   }
 
   const user = await db.user.findUnique({ where: { lineUserId: ctx.senderUserId } });
+  const assignees = ctx.isGroup
+    ? await resolveAssignees(ctx.chat.id, draft.assigneeNames)
+    : { resolved: [], unresolved: [] };
 
   const out = await createRecurringReminder({
     chatId: ctx.chat.id,
@@ -410,6 +419,7 @@ async function handleCreateRecurring(
     quietHoursStart: user?.quietHoursStart ?? env.DEFAULT_QUIET_HOURS_START,
     quietHoursEnd: user?.quietHoursEnd ?? env.DEFAULT_QUIET_HOURS_END,
     source: 'text',
+    mentionUserIds: assignees.resolved.map((a) => a.userId),
   });
 
   if (!out.ok) {
@@ -433,7 +443,8 @@ async function handleCreateRecurring(
       dueAtUtc: out.firstFireAtUtc,
       recurrenceLabel: describeRecurrence(draft.rrule, draft.everyMinutes, fire.minute),
       quietHoursShifted: out.shiftedByQuietHours,
-      unknownAssignees: ctx.isGroup && draft.assigneeNames.length > 0 ? draft.assigneeNames : [],
+      assigneeLabels: assignees.resolved.map((a) => a.displayName),
+      unknownAssignees: assignees.unresolved,
     }),
   ]);
 }

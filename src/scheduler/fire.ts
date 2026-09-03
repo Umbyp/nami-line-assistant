@@ -1,8 +1,10 @@
+import type { messagingApi } from '@line/bot-sdk';
 import type { ReminderOccurrence } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { push } from '../line/push.js';
 import { reminderFire } from '../line/flex/reminderFire.js';
+import { buildMentionMessage } from '../line/mentionMessage.js';
 import { scheduleNextOccurrence } from '../reminders/service.js';
 import { env } from '../config/env.js';
 
@@ -68,7 +70,17 @@ export async function fireOccurrence(occurrenceId: string): Promise<FireOutcome>
   }
 
   // ── 2. push ──
-  const message = reminderFire({
+  // สมาชิกที่ถูกมอบหมายอาจออกจากกลุ่มไปแล้วตั้งแต่ตอนตั้งเตือน จึงดึงชื่อสดๆ ตอนนี้
+  // ไม่ใช้ชื่อที่เก็บไว้ตอนสร้าง (ซึ่งเราไม่ได้เก็บชื่อไว้เลย เก็บแค่ userId)
+  const mentionMembers =
+    reminder.mentionUserIds.length > 0
+      ? await prisma.groupMember.findMany({
+          where: { chatId: reminder.chatId, lineUserId: { in: reminder.mentionUserIds } },
+          select: { lineUserId: true, displayName: true },
+        })
+      : [];
+
+  const flex = reminderFire({
     occurrenceId: occ.id,
     reminderId: reminder.id,
     title: reminder.title,
@@ -78,12 +90,35 @@ export async function fireOccurrence(occurrenceId: string): Promise<FireOutcome>
     rrule: reminder.rrule,
     everyMinutes: reminder.everyMinutes,
     fireAtMinuteLocal: reminder.fireAtMinuteLocal,
+    assigneeLabels: mentionMembers.map((m) => m.displayName ?? m.lineUserId),
     tz: reminder.creator?.tz ?? env.APP_TIMEZONE,
   });
 
-  const result = await push(chat.lineId, [message], {
+  const validMentions = mentionMembers.filter(
+    (m): m is { lineUserId: string; displayName: string } => Boolean(m.displayName),
+  );
+
+  const messages: messagingApi.Message[] =
+    validMentions.length > 0
+      ? [
+          buildMentionMessage(
+            validMentions.map((m) => ({ userId: m.lineUserId, displayName: m.displayName })),
+            reminder.title,
+          ),
+          flex,
+        ]
+      : [flex];
+
+  let result = await push(chat.lineId, messages, {
     plan: reminder.creator?.plan ?? 'free',
   });
+
+  // LINE ปฏิเสธทั้งชุดถ้า mention target ใช้ไม่ได้แล้ว (เช่นคนนั้นออกจากกลุ่มไปแล้วจริงๆ)
+  // ไม่ยอมให้เรื่อง mention ทำให้การเตือนหลักส่งไม่ถึงผู้ใช้เลย — ลองส่งใหม่แบบไม่มี mention
+  if (!result.sent && result.reason === 'api_error' && messages.length > 1) {
+    logger.warn({ occurrenceId, mentionCount: validMentions.length }, 'push พร้อม mention พลาด ลองใหม่แบบไม่มี mention');
+    result = await push(chat.lineId, [flex], { plan: reminder.creator?.plan ?? 'free' });
+  }
 
   if (!result.sent) {
     const canRetry = result.reason === 'api_error' && occ.attempt < MAX_FIRE_ATTEMPTS;

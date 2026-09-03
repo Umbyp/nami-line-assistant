@@ -16,7 +16,7 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 | **P2** | NLU + ตั้งเตือนรายครั้ง + Flex ยืนยัน | ✅ เสร็จ |
 | **P3** | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ✅ เสร็จ |
 | **P4** | vault เก็บ + ค้นหา | ✅ เสร็จ |
-| P5 | โหมดกลุ่ม + mention | ⬜ |
+| **P5** | โหมดกลุ่ม + mention | ✅ เสร็จ |
 | P6 | rich menu + ขัดเกลาข้อความ + test | ⬜ |
 
 ---
@@ -413,6 +413,42 @@ query ประกอบ SQL string เอง (`$queryRawUnsafe`) เพรา�
 
 ---
 
+## กลุ่ม + mention
+
+### จับคู่ชื่อ → userId (`src/handlers/mentionResolve.ts`)
+
+LINE ไม่ให้ list สมาชิกกลุ่ม (ถ้าไม่ใช่ verified OA) นามิจึงรู้จักได้แค่คนที่**เคยพูดในกลุ่มมาก่อน**
+(เก็บไว้ใน `group_members` ตั้งแต่ P1 — ทุกครั้งที่มีคนพูด ไม่ว่าจะเรียกนามิหรือไม่)
+
+เมื่อ NLU ดึงชื่อที่ถูกมอบหมายออกมาได้ (เช่น `"โบ๊ท"` จาก `"เตือนโบ๊ทพรุ่งนี้บ่าย 3 ส่งรายงาน"`)
+`resolveAssignees()` จับคู่กับ `group_members` ตามกติกา **อนุรักษ์นิยม** (พลาดแล้วเงียบไว้ ดีกว่าเดา mention ผิดคน):
+
+1. ตรงเป๊ะ (ตัดช่องว่าง/ตัวพิมพ์เล็กใหญ่) → ชนะทันที
+2. ไม่เจอ → ลอง substring ทั้งสองทิศทาง (`"โบ๊ท"` ⊂ `"พี่โบ๊ท เก่งกาจ"`)
+3. เจอมากกว่า 1 คนที่คะแนนเท่ากัน (ชื่อซ้ำในกลุ่ม, substring จับได้หลายคน) → **ไม่ resolve**
+
+ชื่อที่จับคู่ไม่ได้ยังคงแสดงข้อความตามสเปก: *"ให้คนนั้นพิมพ์ในกลุ่มครั้งนึงก่อนนะ นามิจะจำไว้"*
+
+### mention จริงเกิดตอนยิงเตือน ไม่ใช่ตอนตั้ง
+
+Flex bubble **ไม่รองรับ mention จริง** (กดแล้วเด้งแจ้งเตือนหาคนนั้น) — ต่อให้พิมพ์ `"@ชื่อ"`
+ลงในข้อความของ Flex ตรงๆ ก็เป็นแค่ตัวหนังสือเฉยๆ mention จริงรองรับเฉพาะข้อความ (`text`/`textV2`)
+`src/line/mentionMessage.ts` จึงสร้าง **`textV2` แยกออกมาต่างหาก** (ใช้ `substitution` + placeholder
+`{m0}`, `{m1}`, ...) ส่งคู่กับ Flex การ์ดรายละเอียด — ตอนตั้งเตือน (`reminderConfirm`) แค่โชว์ชื่อเป็น
+ข้อความธรรมดา ไม่ต้อง ping ทันที เพราะจุดที่ควรเตือนจริงๆ คือตอนที่มันจะยิง ไม่ใช่ตอนบันทึก
+
+### สมาชิกอาจออกจากกลุ่มไปแล้วตอนเตือนยิงจริง
+
+`reminder.mention_user_ids` เก็บแค่ `userId` ไม่เก็บชื่อ — `fire.ts` **ดึงชื่อสดๆ จาก `group_members`
+ตอนยิงจริง** ไม่ใช่ตอนสร้าง เผื่อชื่อเปลี่ยนหรือสมาชิกออกจากกลุ่มไปแล้ว (แถวใน `group_members` ไม่ถูกลบ
+เมื่อออกจากกลุ่ม — ดูเหตุผลใน `lifecycle.ts`)
+
+ถ้า mention target ใช้ไม่ได้แล้วจริง LINE จะปฏิเสธ**ทั้งชุดข้อความ** (ทั้ง mention และ Flex)
+`fireOccurrence()` จึงมี fallback: push พร้อม mention ไม่สำเร็จ (`api_error`) → **ลองใหม่ทันทีแบบไม่มี mention**
+เพื่อไม่ให้ปัญหาเรื่อง mention ทำให้การเตือนหลักส่งไม่ถึงผู้ใช้เลย
+
+---
+
 ## ทดสอบโดยไม่ต้องมี LINE จริง
 
 `scripts/send-webhook.ts` ยิง webhook ปลอมเข้าเครื่องตัวเอง **พร้อมเซ็น `X-Line-Signature` ให้ถูกต้อง**
@@ -482,8 +518,10 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/flex.test.ts` | ปุ่มถูกชนิด (datetimepicker/postback), `min` กันเลือกอดีต, บอกผู้ใช้เมื่อเลื่อนวันให้, ข้อความ mention ที่ยังไม่รู้ userId |
 | `tests/reminders.test.ts` | **integration กับ Postgres จริง** — ทรานแซกชัน, `unique(reminderId, fireAtUtc)` กันยิงซ้ำ, ปฏิเสธการยกเลิก/แก้ของแชทอื่น, `onDelete: Restrict`/`Cascade` |
 | `tests/nextOccurrence.test.ts` | รายวัน/สัปดาห์/เดือน/ปี/ทุก N นาที, **วันที่ 31 ต้องข้ามเดือนที่ไม่มี**, 29 ก.พ. อธิกสุรทิน, `BYMONTHDAY=-1`, **DST ทั้งสองทิศ**, quiet hours ที่ไม่ทำตารางเพี้ยนสะสม |
-| `tests/scheduler.test.ts` | **integration กับ Postgres จริง** — **ยิงพร้อมกัน 5 ตัว push ถูกเรียกครั้งเดียว**, retry 3 ครั้งแล้ว failed, โควตาหมดไม่ retry, กู้แถวที่ค้างในสถานะ `sending`, `jobId = occurrence id`, horizon 1 ชม., snooze สร้างแถวใหม่ไม่แก้แถวเดิม |
+| `tests/scheduler.test.ts` | **integration กับ Postgres จริง** — **ยิงพร้อมกัน 5 ตัว push ถูกเรียกครั้งเดียว**, retry 3 ครั้งแล้ว failed, โควตาหมดไม่ retry, กู้แถวที่ค้างในสถานะ `sending`, `jobId = occurrence id`, horizon 1 ชม., snooze สร้างแถวใหม่ไม่แก้แถวเดิม, **@mention: ยิง textV2+Flex คู่กัน, fallback เป็น Flex อย่างเดียวเมื่อ mention พลาด, ไม่มี mention เมื่อยังไม่รู้จักคนนั้น** |
 | `tests/vault.test.ts` | **integration กับ Postgres + MinIO จริง (mock เฉพาะ S3/LINE)** — โควตาสะสมตลอดกาล, ไม่สร้างแถวถ้าดาวน์โหลด/อัปโหลดพลาด, ลบไฟล์จริงจาก storage, hybrid search (tsvector/trgm/pgvector), แยกแชทถูก, `extractUrls` |
+| `tests/mentionResolve.test.ts` | **integration กับ Postgres จริง** — จับคู่ตรงเป๊ะ/substring ทั้งสองทิศทาง, ชื่อซ้ำ/จับได้หลายคน → ไม่เดา, แยกกลุ่มถูก |
+| `tests/mentionMessage.test.ts` | สร้าง `textV2` + `substitution` ครบทุกคน, placeholder `{m0}`/`{m1}` ตรงกับ mentionee |
 
 > `tests/reminders.test.ts` ต้องมี Postgres รันอยู่ (`docker compose up -d postgres`)
 > `tests/globalSetup.ts` จะรัน migration ลง DB ชื่อ `nami_test` ให้เอง
@@ -523,6 +561,7 @@ src/
 │  ├─ client.ts         MessagingApiClient + BlobClient
 │  ├─ reply.ts          reply (ฟรี)
 │  ├─ push.ts           push (มีค่าใช้จ่าย) — ทางเดียวที่อนุญาตให้ push
+│  ├─ mentionMessage.ts textV2 + substitution — mention จริงที่กดแล้วเด้งแจ้งเตือน
 │  └─ usage.ts          นับ push / llm token / storage ลง usage_counters
 ├─ webhook/
 │  ├─ server.ts         Fastify + parser ที่เก็บ raw body ไว้คำนวณ signature
@@ -540,6 +579,7 @@ src/
 │  ├─ postback.ts       ปุ่มทั้งหมด
 │  ├─ context.ts        upsert chat/user/group_member — จำ userId ทุกคนที่พูดในกลุ่ม
 │  ├─ groupGate.ts      กติกา "ตอบเฉพาะเมื่อถูกเรียก" ในกลุ่ม
+│  ├─ mentionResolve.ts จับคู่ชื่อที่ NLU ดึงมา → userId จาก group_members
 │  └─ lifecycle.ts      unfollow/leave → ปิดแชท หยุดยิง push
 ├─ worker/
 │  ├─ index.ts          เข้า worker process (3 worker)
@@ -680,3 +720,5 @@ npm run db:verify
 | อัปโหลดไฟล์ล้มเหลว ต่อ MinIO ไม่ได้ | เช็ค `docker compose ps` ว่า `nami-minio` รันอยู่ และ `minio-init` สร้าง bucket สำเร็จ (`docker compose logs minio-init`) |
 | นามิตอบว่ายังต่อสมองไม่ได้ตอนส่งลิงก์/ไฟล์ | เก็บลิงก์/ไฟล์ไม่ต้องใช้ LLM เลย — ถ้าเจอข้อความนี้แปลว่าเป็นข้อความอื่นที่ปนมา ไม่ใช่จากการเก็บ vault |
 | นามิถามคำถามที่ไม่เกี่ยวข้อง (เช่นถาม "กี่โมง" ตอนขอเก็บลิงก์) | โมเดลใส่ `ambiguousFields` มาแม้ intent จะไม่ใช่ `create_reminder` — `sanitizeNluResult()` ต้องกรองออก ดูหัวข้อ "ambiguousFields เป็นเรื่องของการตั้งเตือนเท่านั้น" |
+| มอบหมายคนในกลุ่มแล้วนามิบอกว่าไม่รู้จัก | คนนั้นต้องเคยพิมพ์ในกลุ่มมาก่อน (นามิรู้จักจาก `group_members` เท่านั้น) และชื่อต้องไม่ซ้ำ/กำกวมกับคนอื่นในกลุ่ม |
+| ยิงเตือนแล้วไม่มี @mention ทั้งที่ตอนตั้งเตือนบอกว่ารู้จักคนนั้น | ปกติถ้า push พร้อม mention พลาด (เช่นคนนั้นออกจากกลุ่มไปแล้ว) — `fireOccurrence()` จะ fallback ส่งแค่ Flex แทนอัตโนมัติ ดู log หา `"push พร้อม mention พลาด"` |
