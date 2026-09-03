@@ -1,0 +1,103 @@
+# นามิ — dev stack ครบชุด
+#   docker compose up -d              → ยกแค่ infra (postgres/redis/minio) แล้วรันแอปบนเครื่อง (แนะนำตอน dev)
+#   docker compose --profile app up   → ยกแอป + worker ในคอนเทนเนอร์ด้วย
+services:
+  postgres:
+    # ใช้ image ที่มี pgvector มาให้แล้ว จะได้ไม่ต้อง build เอง
+    image: pgvector/pgvector:pg16
+    container_name: nami-postgres
+    environment:
+      POSTGRES_USER: nami
+      POSTGRES_PASSWORD: nami
+      POSTGRES_DB: nami
+      # บังคับ timezone ของ server เป็น UTC — เราไม่พึ่ง timezone ของ DB ในการคำนวณ
+      TZ: UTC
+      PGTZ: UTC
+    ports: ['55432:5432'] # host 55432 กัน Postgres ตัวอื่นบนเครื่องชนกัน
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nami -d nami']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: nami-redis
+    # BullMQ ต้องการ noeviction ไม่งั้น job อาจถูกลบทิ้งตอน memory เต็ม
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    ports: ['6379:6379']
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    container_name: nami-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: nami-minio
+      MINIO_ROOT_PASSWORD: nami-minio-secret
+    ports:
+      - '9000:9000' # S3 API
+      - '9001:9001' # web console → http://localhost:9001
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # สร้าง bucket ให้อัตโนมัติ แล้วจบตัวเอง
+  minio-init:
+    image: minio/mc:latest
+    container_name: nami-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 nami-minio nami-minio-secret &&
+      mc mb --ignore-existing local/nami-vault &&
+      echo 'bucket nami-vault พร้อมใช้งาน'
+      "
+
+  app:
+    profiles: ['app']
+    build: .
+    container_name: nami-app
+    command: ['node', 'dist/index.js']
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nami:nami@postgres:5432/nami?schema=public
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+    ports: ['3100:3100']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: ['app']
+    build: .
+    container_name: nami-worker
+    command: ['node', 'dist/worker/index.js']
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://nami:nami@postgres:5432/nami?schema=public
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

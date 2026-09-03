@@ -1,0 +1,12 @@
+{
+  // build เฉพาะ src เพื่อให้ผลลัพธ์เป็น dist/index.js (ไม่ใช่ dist/src/index.js)
+  // ตรงกับ CMD ใน Dockerfile และ npm start
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests", "scripts"]
+}

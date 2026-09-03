@@ -1,0 +1,321 @@
+// ─────────────────────────────────────────────────────────────
+// นามิ (Nami) — schema
+// กฎเหล็ก: ทุกคอลัมน์เวลาเก็บเป็น UTC (timestamptz) เสมอ
+//          การแปลงเป็นเวลาไทยเกิดที่ชั้น presentation เท่านั้น
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm, vector, unaccent]
+}
+
+enum Plan {
+  free
+  pro
+}
+
+enum ChatType {
+  user
+  group
+  room
+}
+
+enum ReminderKind {
+  once
+  recurring
+}
+
+enum ReminderStatus {
+  active
+  done
+  cancelled
+}
+
+enum ReminderSource {
+  text
+  image
+}
+
+enum OccurrenceStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+enum VaultKind {
+  text
+  link
+  image
+  file
+}
+
+enum DraftStatus {
+  pending
+  confirmed
+  discarded
+}
+
+// ── ผู้ใช้ ────────────────────────────────────────────────────
+model User {
+  lineUserId String   @id @map("line_user_id")
+  displayName String? @map("display_name")
+  tz         String   @default("Asia/Bangkok")
+  plan       Plan     @default(free)
+
+  // quiet hours เก็บเป็น "นาทีนับจากเที่ยงคืน" ตาม tz ของผู้ใช้ (0-1439)
+  // เก็บเป็น int ไม่ใช่ time เพราะต้องคำนวณช่วงที่ข้ามเที่ยงคืนได้ (เช่น 1320 → 420)
+  quietHoursStart Int? @map("quiet_hours_start")
+  quietHoursEnd   Int? @map("quiet_hours_end")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  createdReminders Reminder[]    @relation("reminder_creator")
+  createdVaultItems VaultItem[]  @relation("vault_creator")
+  memberships      GroupMember[]
+
+  @@map("users")
+}
+
+// ── ห้องแชท (1:1 / group / room) ─────────────────────────────
+model Chat {
+  id       String   @id @default(uuid()) @db.Uuid
+  lineId   String   @unique @map("line_id") // userId / groupId / roomId จาก LINE
+  type     ChatType
+  isActive Boolean  @default(true) @map("is_active")
+  joinedAt DateTime @default(now()) @map("joined_at") @db.Timestamptz(3)
+  leftAt   DateTime? @map("left_at") @db.Timestamptz(3)
+
+  // ชื่อกลุ่ม cache ไว้ (getGroupSummary) เพื่อไม่ต้องยิง API ทุกครั้ง
+  title String?
+
+  members    GroupMember[]
+  reminders  Reminder[]
+  vaultItems VaultItem[]
+  drafts     ReminderDraft[]
+
+  @@index([isActive])
+  @@map("chats")
+}
+
+// ── สมาชิกกลุ่ม: เก็บทุกครั้งที่มีคนพูด เพื่อให้ mention (@) ได้ ──
+// LINE ไม่ให้ list สมาชิกกลุ่มถ้าไม่ใช่ verified OA เราจึงต้องสะสมเอง
+model GroupMember {
+  chatId      String   @map("chat_id") @db.Uuid
+  lineUserId  String   @map("line_user_id")
+  displayName String?  @map("display_name")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+
+  chat Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [lineUserId], references: [lineUserId], onDelete: SetNull)
+
+  @@id([chatId, lineUserId])
+  @@index([chatId, displayName])
+  @@map("group_members")
+}
+
+// ── การเตือน ─────────────────────────────────────────────────
+model Reminder {
+  id        String @id @default(uuid()) @db.Uuid
+  chatId    String @map("chat_id") @db.Uuid
+  createdBy String @map("created_by")
+
+  title String
+  note  String?
+
+  kind ReminderKind
+
+  // once: ใช้ dueAtUtc
+  dueAtUtc DateTime? @map("due_at_utc") @db.Timestamptz(3)
+
+  // recurring: ใช้ rrule (RFC 5545) หรือ everyMinutes อย่างใดอย่างหนึ่ง
+  // rrule เก็บแบบ "ไร้ timezone" (ไม่มี DTSTART) — เวลาอ้างอิงอยู่ที่ rruleAnchorLocal + tz ของ chat
+  rrule        String?
+  everyMinutes Int?    @map("every_minutes")
+
+  // เวลาอ้างอิงเป็น local time ของ tz ผู้ใช้ (นาทีจากเที่ยงคืน) ใช้คู่กับ rrule
+  // แยกจาก rrule เพราะ rrule library คำนวณบน floating time แล้วเราค่อย map เข้า tz ไทย
+  fireAtMinuteLocal Int? @map("fire_at_minute_local")
+
+  mentionUserIds String[] @default([]) @map("mention_user_ids")
+
+  source ReminderSource @default(text)
+  status ReminderStatus @default(active)
+
+  nextFireAtUtc DateTime? @map("next_fire_at_utc") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  chat        Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  creator     User?                @relation("reminder_creator", fields: [createdBy], references: [lineUserId], onDelete: SetNull)
+  occurrences ReminderOccurrence[]
+
+  // index หลักของ scheduler: กวาดหา reminder ที่ต้องสร้าง occurrence ถัดไป
+  @@index([status, nextFireAtUtc])
+  @@index([chatId, status])
+  @@map("reminders")
+}
+
+// ── occurrence: 1 แถว = 1 ครั้งที่จะยิง ใช้กันยิงซ้ำ ──────────
+// jobId ของ BullMQ = occurrence id → enqueue ซ้ำกี่รอบก็เป็น job เดียว
+model ReminderOccurrence {
+  id         String   @id @default(uuid()) @db.Uuid
+  reminderId String   @map("reminder_id") @db.Uuid
+  fireAtUtc  DateTime @map("fire_at_utc") @db.Timestamptz(3)
+
+  status  OccurrenceStatus @default(pending)
+  sentAt  DateTime?        @map("sent_at") @db.Timestamptz(3)
+  attempt Int              @default(0)
+  lastError String?        @map("last_error")
+
+  // occurrence ที่เกิดจากการกด "เลื่อน" จะชี้กลับไปที่ตัวเดิม
+  snoozedFromId String? @map("snoozed_from_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  reminder Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  // กันสร้าง occurrence เวลาเดียวกันซ้ำ (เช่น sweeper ชนกับ enqueuer)
+  @@unique([reminderId, fireAtUtc])
+  // index หลักของ sweeper
+  @@index([status, fireAtUtc])
+  @@map("reminder_occurrences")
+}
+
+// ── draft: ใช้ตอนอ่านรูปแล้วได้เตือนหลายรายการ รอผู้ใช้ยืนยัน ──
+model ReminderDraft {
+  id     String      @id @default(uuid()) @db.Uuid
+  chatId String      @map("chat_id") @db.Uuid
+  createdBy String   @map("created_by")
+  status DraftStatus @default(pending)
+
+  // payload = ผลจาก LLM ที่ผ่าน zod แล้ว (array ของ reminder ที่จะสร้าง)
+  payload Json
+  source  ReminderSource @default(image)
+
+  // ลบทิ้งอัตโนมัติหลังหมดอายุ (cron cleanup)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([status, expiresAt])
+  @@map("reminder_drafts")
+}
+
+// ── Vault: เก็บของไม่มีวันหมดอายุ (จุดขายหลัก) ────────────────
+model VaultItem {
+  id        String @id @default(uuid()) @db.Uuid
+  chatId    String @map("chat_id") @db.Uuid
+  createdBy String @map("created_by")
+
+  kind  VaultKind
+  title String?
+
+  contentText String? @map("content_text") // ข้อความ / URL / คำบรรยายรูปจาก vision / ข้อความที่ OCR ได้
+
+  storageKey String? @map("storage_key") // key ใน S3/R2 (null ถ้าเป็น text/link)
+  mime       String?
+  sizeBytes  Int?    @map("size_bytes")
+  // ชื่อไฟล์เดิมจาก LINE (มีเฉพาะ message type = file)
+  originalFileName String? @map("original_file_name")
+
+  tags String[] @default([])
+
+  // full-text: generated column (tsvector) จัดการใน migration SQL
+  searchTsv Unsupported("tsvector")? @map("search_tsv")
+  // semantic: pgvector — null ได้ถ้าไม่ได้ตั้ง VOYAGE_API_KEY
+  embedding Unsupported("vector(1024)")?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  chat    Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  creator User? @relation("vault_creator", fields: [createdBy], references: [lineUserId], onDelete: SetNull)
+
+  @@index([chatId, createdAt])
+  @@index([chatId, kind])
+  @@map("vault_items")
+}
+
+// ── นับต้นทุน: push / token / storage ต่อ scope ต่อเดือน ───────
+// scopeId = chat.lineId (นับที่ปลายทางที่เราจ่ายค่า push จริง)
+model UsageCounter {
+  scopeId String @map("scope_id")
+  month   String // 'YYYY-MM' ตามเวลาไทย
+
+  pushCount    Int    @default(0) @map("push_count")
+  llmTokens    Int    @default(0) @map("llm_tokens")
+  storageBytes BigInt @default(0) @map("storage_bytes")
+
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@id([scopeId, month])
+  @@map("usage_counters")
+}
+
+// ── กัน webhook event ซ้ำ (LINE retry ได้) ───────────────────
+model ProcessedEvent {
+  webhookEventId String   @id @map("webhook_event_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@map("processed_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ยังไม่ใช้ใน v1 — วางโครงไว้ล่วงหน้าตามที่ตกลง
+// ─────────────────────────────────────────────────────────────
+
+// Google Calendar sync
+model ExternalAccount {
+  id           String   @id @default(uuid()) @db.Uuid
+  lineUserId   String   @map("line_user_id")
+  provider     String // 'google'
+  externalId   String?  @map("external_id")
+  accessToken  String?  @map("access_token")
+  refreshToken String?  @map("refresh_token")
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz(3)
+  scopes       String[]  @default([])
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([lineUserId, provider])
+  @@map("external_accounts")
+}
+
+// to-do list
+model Todo {
+  id          String    @id @default(uuid()) @db.Uuid
+  chatId      String    @map("chat_id") @db.Uuid
+  createdBy   String    @map("created_by")
+  title       String
+  isDone      Boolean   @default(false) @map("is_done")
+  dueAtUtc    DateTime? @map("due_at_utc") @db.Timestamptz(3)
+  assigneeIds String[]  @default([]) @map("assignee_ids")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([chatId, isDone])
+  @@map("todos")
+}
+
+// ระบบจ่ายเงิน
+model Subscription {
+  id         String    @id @default(uuid()) @db.Uuid
+  lineUserId String    @unique @map("line_user_id")
+  plan       Plan      @default(free)
+  provider   String? // 'stripe' | 'omise' | ...
+  externalId String?   @map("external_id")
+  status     String    @default("active")
+  periodEnd  DateTime? @map("period_end") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("subscriptions")
+}
