@@ -19,6 +19,7 @@ import { searchVault } from '../vault/search.js';
 import { vaultSearchResult } from '../line/flex/vaultSearchResult.js';
 import { mimeForFileName, mimeForMessageType } from '../vault/mime.js';
 import { resolveAssignees } from './mentionResolve.js';
+import { UNKNOWN_SENDER } from '../copy.js';
 import type { ChatContext } from './context.js';
 import type { NluResult } from '../nlu/schema.js';
 
@@ -193,7 +194,7 @@ async function handleSaveToVault(
   ctx: ChatContext,
 ): Promise<void> {
   if (!ctx.senderUserId) {
-    await reply(replyToken, [textMessage('นามิยังไม่รู้ว่าคุณเป็นใคร ลองเพิ่มนามิเป็นเพื่อนก่อนนะ')]);
+    await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
     return;
   }
 
@@ -222,7 +223,7 @@ async function handleMediaMessage(
 ): Promise<void> {
   if (!ctx.senderUserId) {
     if (replyToken && !ctx.isGroup) {
-      await reply(replyToken, [textMessage('นามิยังไม่รู้ว่าคุณเป็นใคร ลองเพิ่มนามิเป็นเพื่อนก่อนนะ')]);
+      await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
     }
     return;
   }
@@ -327,7 +328,7 @@ async function handleCreateReminder(
   if (!ctx.senderUserId) {
     // ไม่รู้ว่าใครสั่ง → createdBy ใส่ไม่ได้ (FK ไป users)
     await reply(replyToken, [
-      textMessage('นามิยังไม่รู้ว่าคุณเป็นใคร ลองเพิ่มนามิเป็นเพื่อนก่อนนะ'),
+      textMessage(UNKNOWN_SENDER),
     ]);
     return;
   }
@@ -373,7 +374,7 @@ async function handleCreateRecurring(
 ): Promise<void> {
   if (!ctx.senderUserId) {
     await reply(replyToken, [
-      textMessage('นามิยังไม่รู้ว่าคุณเป็นใคร ลองเพิ่มนามิเป็นเพื่อนก่อนนะ'),
+      textMessage(UNKNOWN_SENDER),
     ]);
     return;
   }
@@ -472,7 +473,7 @@ function dueFailureText(reason: string): string {
   }
 }
 
-function helpText(isGroup: boolean): string {
+export function helpText(isGroup: boolean): string {
   const lines = [
     'นามิทำอะไรได้บ้าง 👋',
     '',

@@ -18,6 +18,17 @@ import { env } from '../config/env.js';
 import { formatThaiFriendly } from '../lib/time.js';
 import { LOCAL_DATETIME_RE } from '../nlu/schema.js';
 import { getSignedDownloadUrl } from '../vault/storage.js';
+import { listRecentVaultItems, toSearchHit } from '../vault/service.js';
+import { vaultSearchResult, VAULT_RESULT_MAX } from '../line/flex/vaultSearchResult.js';
+import { helpText } from './message.js';
+import { settingsView } from '../line/flex/settingsView.js';
+import {
+  disableQuietHours,
+  enableDefaultQuietHours,
+  getOrCreateUserSettings,
+  setQuietHour,
+} from './settings.js';
+import { UNKNOWN_SENDER, REMINDER_NOT_FOUND } from '../copy.js';
 import type { ChatContext } from './context.js';
 
 export async function handlePostbackEvent(
@@ -46,11 +57,7 @@ export async function handlePostbackEvent(
       const r = await cancelReminder(action.id, ctx.chat.id);
       if (!replyToken) return;
       await reply(replyToken, [
-        textMessage(
-          r
-            ? `ปิดการเตือน "${r.title}" แล้ว ไม่เตือนอีกนะ`
-            : 'ไม่เจอการเตือนนี้ อาจถูกลบไปแล้ว',
-        ),
+        textMessage(r ? `ปิดการเตือน "${r.title}" แล้ว ไม่เตือนอีกนะ` : REMINDER_NOT_FOUND),
       ]);
       return;
     }
@@ -85,7 +92,7 @@ export async function handlePostbackEvent(
       const r = await retimeReminder(action.id, ctx.chat.id, newDue);
       if (!replyToken) return;
       if (!r) {
-        await reply(replyToken, [textMessage('ไม่เจอการเตือนนี้ อาจถูกลบไปแล้ว')]);
+        await reply(replyToken, [textMessage(REMINDER_NOT_FOUND)]);
         return;
       }
 
@@ -110,7 +117,7 @@ export async function handlePostbackEvent(
       const out = await markOccurrenceDone(action.oid, ctx.chat.id);
       if (!replyToken) return;
       if (!out) {
-        await reply(replyToken, [textMessage('ไม่เจอการเตือนนี้แล้ว')]);
+        await reply(replyToken, [textMessage(REMINDER_NOT_FOUND)]);
         return;
       }
       await reply(replyToken, [
@@ -128,7 +135,7 @@ export async function handlePostbackEvent(
       const out = await snoozeOccurrence(action.oid, ctx.chat.id, action.m);
       if (!replyToken) return;
       if (!out) {
-        await reply(replyToken, [textMessage('ไม่เจอการเตือนนี้แล้ว')]);
+        await reply(replyToken, [textMessage(REMINDER_NOT_FOUND)]);
         return;
       }
 
@@ -151,7 +158,7 @@ export async function handlePostbackEvent(
 
     case 'help': {
       if (replyToken) {
-        await reply(replyToken, [textMessage('พิมพ์ "ช่วยเหลือ" ได้เลย นามิจะบอกให้')]);
+        await reply(replyToken, [textMessage(helpText(ctx.isGroup))]);
       }
       return;
     }
@@ -181,6 +188,69 @@ export async function handlePostbackEvent(
           textMessage(`${item.title ?? 'ไฟล์'}\nลิงก์เปิด/ดาวน์โหลด (ใช้ได้ 10 นาที):\n${url}`),
         ]);
       }
+      return;
+    }
+
+    // ── ดูของที่เก็บไว้ล่าสุด (ปุ่มเมนู "โน้ต-ไฟล์") ──
+    case 'vault.list': {
+      if (!replyToken) return;
+      const items = await listRecentVaultItems(ctx.chat.id, VAULT_RESULT_MAX);
+      await reply(replyToken, [
+        vaultSearchResult({ hits: items.map(toSearchHit), query: '', tz: env.APP_TIMEZONE }),
+      ]);
+      return;
+    }
+
+    // ── ตั้งค่า ──
+    case 'settings.view': {
+      if (!replyToken) return;
+      if (!ctx.senderUserId) {
+        await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
+        return;
+      }
+      const user = await getOrCreateUserSettings(ctx.senderUserId);
+      await reply(replyToken, [settingsView(user)]);
+      return;
+    }
+
+    case 'settings.quiet_start':
+    case 'settings.quiet_end': {
+      if (!replyToken) return;
+      if (!ctx.senderUserId) {
+        await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
+        return;
+      }
+      const minute = readPickerTime(event.postback?.params);
+      if (minute === null) {
+        logger.warn({ params: event.postback?.params }, 'datetimepicker (time) ส่งค่ามาผิดรูป');
+        await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จ ลองกดอีกทีนะ')]);
+        return;
+      }
+      const field = action.a === 'settings.quiet_start' ? 'start' : 'end';
+      const user = await setQuietHour(ctx.senderUserId, field, minute);
+      await reply(replyToken, [settingsView(user)]);
+      return;
+    }
+
+    case 'settings.quiet_off': {
+      if (!replyToken) return;
+      if (!ctx.senderUserId) {
+        await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
+        return;
+      }
+      const user = await disableQuietHours(ctx.senderUserId);
+      await reply(replyToken, [settingsView(user)]);
+      return;
+    }
+
+    case 'settings.quiet_on': {
+      if (!replyToken) return;
+      if (!ctx.senderUserId) {
+        await reply(replyToken, [textMessage(UNKNOWN_SENDER)]);
+        return;
+      }
+      const user = await enableDefaultQuietHours(ctx.senderUserId);
+      await reply(replyToken, [settingsView(user)]);
       return;
     }
   }
@@ -223,4 +293,20 @@ function readPickerDatetime(params: unknown): string | null {
   const v = (params as { datetime?: unknown }).datetime;
   if (typeof v !== 'string' || !LOCAL_DATETIME_RE.test(v)) return null;
   return v;
+}
+
+/**
+ * ดึงค่าจาก datetimepicker mode='time'
+ * LINE ส่งมาใน postback.params.time เป็น 'HH:mm' — แปลงเป็นนาทีจากเที่ยงคืนตรงๆ
+ */
+function readPickerTime(params: unknown): number | null {
+  if (!params || typeof params !== 'object') return null;
+  const v = (params as { time?: unknown }).time;
+  if (typeof v !== 'string') return null;
+  const m = /^(\d{2}):(\d{2})$/.exec(v);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
 }

@@ -24,6 +24,7 @@ const KIND_LABEL: Record<VaultKind, string> = {
 
 export interface VaultSearchResultInput {
   hits: VaultSearchHit[];
+  /** ว่าง = โหมดดูของล่าสุด (ปุ่มเมนู "โน้ต-ไฟล์") ไม่ใช่การค้นหา — เปลี่ยนถ้อยคำให้เข้ากับบริบท */
   query: string;
   tz?: string;
   now?: Date;
@@ -37,14 +38,22 @@ export function vaultSearchResult(input: VaultSearchResultInput): messagingApi.M
   const tz = input.tz ?? env.APP_TIMEZONE;
   const now = input.now ?? new Date();
   const hits = input.hits.slice(0, VAULT_RESULT_MAX);
+  const isBrowsingRecent = input.query.trim() === '';
 
   if (hits.length === 0) {
-    return { type: 'text', text: `หา "${input.query}" ไม่เจอเลยนะ ลองคำอื่นดูไหม` };
+    return {
+      type: 'text',
+      text: isBrowsingRecent
+        ? 'ยังไม่มีของเก็บไว้เลย ส่งรูป ไฟล์ หรือลิงก์มาได้เลย นามิจะเก็บให้'
+        : `หา "${input.query}" ไม่เจอเลยนะ ลองคำอื่นดูไหม`,
+    };
   }
 
   return {
     type: 'flex',
-    altText: `เจอ ${hits.length} รายการ: ${hits.map((h) => h.title ?? KIND_LABEL[h.kind]).slice(0, 3).join(', ')}`,
+    altText: isBrowsingRecent
+      ? `ของที่เก็บไว้ล่าสุด ${hits.length} รายการ`
+      : `เจอ ${hits.length} รายการ: ${hits.map((h) => h.title ?? KIND_LABEL[h.kind]).slice(0, 3).join(', ')}`,
     contents: { type: 'carousel', contents: hits.map((h) => bubbleFor(h, tz, now)) },
   };
 }

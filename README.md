@@ -17,7 +17,7 @@ LINE Official Account ที่ทำหน้าที่เป็นผู้�
 | **P3** | scheduler + เตือนซ้ำ + postback แก้/ยกเลิก | ✅ เสร็จ |
 | **P4** | vault เก็บ + ค้นหา | ✅ เสร็จ |
 | **P5** | โหมดกลุ่ม + mention | ✅ เสร็จ |
-| P6 | rich menu + ขัดเกลาข้อความ + test | ⬜ |
+| **P6** | rich menu + ขัดเกลาข้อความ + test | ✅ เสร็จ |
 
 ---
 
@@ -449,6 +449,38 @@ Flex bubble **ไม่รองรับ mention จริง** (กดแล�
 
 ---
 
+## Rich menu
+
+### ตั้งเมนูครั้งแรก (หรือทุกครั้งที่แก้ผังปุ่ม)
+
+```bash
+npm run richmenu:setup
+```
+
+สคริปต์นี้ (`scripts/setup-richmenu.ts`) ทำ 4 อย่าง:
+
+1. เรนเดอร์ `assets/richmenu/menu.html` เป็น PNG ขนาด **2500×1686** ด้วย headless Chrome —
+   ใช้ Chrome แทนไลบรารีวาดภาพ (เช่น PIL) เพราะตัวเรนเดอร์ข้อความของแพลตฟอร์มจัดสระ/วรรณยุกต์ไทยผิดรูป
+   ส่วน Chrome ใช้เอนจินเรนเดอร์เว็บจริงจึงจัดตัวอักษรไทยถูกต้อง (ปัญหานี้เจอมาแล้วตอนสร้างรูปทดสอบ vision ใน P2)
+2. ลบ rich menu เก่าที่ชื่อ (`name`) ตรงกับ `RICHMENU_NAME` ก่อนเสมอ — **idempotent** รันซ้ำกี่ครั้งก็ได้ผลลัพธ์เดียวกัน
+3. สร้าง rich menu ใหม่ (`src/richmenu/build.ts`) — แบ่ง 2×2 พอดี 4 ปุ่มตามสเปก:
+   แจ้งเตือน (`rm.list`) / โน้ต-ไฟล์ (`vault.list`) / ตั้งค่า (`settings.view`) / ช่วยเหลือ (`help`)
+   ทุกปุ่มเป็น postback ล้วน ใช้ path เดียวกับปุ่มอื่นในแอป (encode/decode + zod validate)
+4. อัปโหลดรูปและตั้งเป็นเมนูเริ่มต้น (`setDefaultRichMenu`)
+
+**ข้อจำกัดของ LINE ที่ต้องรู้:** rich menu แสดง**เฉพาะแชท 1:1**เท่านั้น ไม่โผล่ในกลุ่ม/ห้อง —
+ไม่ใช่บั๊กของเรา เป็นข้อจำกัดของแพลตฟอร์ม
+
+### ตั้งค่า (v1: เฉพาะช่วงเวลาเงียบ)
+
+ปุ่ม "ตั้งค่า" เปิด Flex แสดงแผน + ช่วงเวลาเงียบปัจจุบัน พร้อมปุ่มปรับเวลาเริ่ม/สิ้นสุด
+(`datetimepicker` mode `time`) และปุ่มเปิด/ปิดช่วงเวลาเงียบทั้งชุด
+
+ขอบเขต v1 แค่ช่วงเวลาเงียบ เพราะเป็น setting เดียวที่มีผลจริงกับพฤติกรรมของระบบอยู่แล้ว (ใช้เลื่อนเวลา
+เตือนซ้ำที่ตกในช่วงเงียบมาตั้งแต่ P3) — ไม่ทำเรื่อง plan/tz เพราะ v1 ยังไม่มี flow เปลี่ยนแผนหรือเปลี่ยน tz จริง
+
+---
+
 ## ทดสอบโดยไม่ต้องมี LINE จริง
 
 `scripts/send-webhook.ts` ยิง webhook ปลอมเข้าเครื่องตัวเอง **พร้อมเซ็น `X-Line-Signature` ให้ถูกต้อง**
@@ -460,6 +492,12 @@ npm run webhook:send -- --group "นามิ เตือนส่งราย�
 npm run webhook:send -- --group "กินข้าวกันยังพวกเรา"          # ในกลุ่ม (ไม่ถูกเรียก → เงียบ)
 npm run webhook:send -- --follow                              # event เพิ่มเพื่อน
 npm run webhook:send -- --bad-signature "ทดสอบ"               # ต้องได้ 401
+
+# ทดสอบปุ่ม rich menu / postback อื่นๆ โดยไม่ต้องกดจริงบนมือถือ
+npm run webhook:send -- --postback '{"a":"rm.list"}'                # ปุ่ม "แจ้งเตือน"
+npm run webhook:send -- --postback '{"a":"vault.list"}'             # ปุ่ม "โน้ต-ไฟล์"
+npm run webhook:send -- --postback '{"a":"settings.view"}'          # ปุ่ม "ตั้งค่า"
+npm run webhook:send -- --postback '{"a":"settings.quiet_start"}' --params '{"time":"23:00"}'
 ```
 
 ### ทดสอบ NLU กับโมเดลจริง
@@ -522,6 +560,8 @@ npm run typecheck  # tsc ทั้ง repo (รวม tests/ และ scripts/)
 | `tests/vault.test.ts` | **integration กับ Postgres + MinIO จริง (mock เฉพาะ S3/LINE)** — โควตาสะสมตลอดกาล, ไม่สร้างแถวถ้าดาวน์โหลด/อัปโหลดพลาด, ลบไฟล์จริงจาก storage, hybrid search (tsvector/trgm/pgvector), แยกแชทถูก, `extractUrls` |
 | `tests/mentionResolve.test.ts` | **integration กับ Postgres จริง** — จับคู่ตรงเป๊ะ/substring ทั้งสองทิศทาง, ชื่อซ้ำ/จับได้หลายคน → ไม่เดา, แยกกลุ่มถูก |
 | `tests/mentionMessage.test.ts` | สร้าง `textV2` + `substitution` ครบทุกคน, placeholder `{m0}`/`{m1}` ตรงกับ mentionee |
+| `tests/richmenu.test.ts` | ขนาดตรงสเปก, 4 ปุ่มครอบคลุมพื้นที่เต็มพอดีไม่ทับกัน, ทุกปุ่ม decode ได้จริง, deterministic |
+| `tests/settings.test.ts` | **integration กับ Postgres จริง** — ค่าดีฟอลต์จาก env, ปรับเริ่ม/สิ้นสุดแยกกันไม่กระทบกัน, ปิดแล้ว `isInQuietHours` เป็น false ทุกนาที, เปิดกลับด้วยค่าดีฟอลต์ |
 
 > `tests/reminders.test.ts` ต้องมี Postgres รันอยู่ (`docker compose up -d postgres`)
 > `tests/globalSetup.ts` จะรัน migration ลง DB ชื่อ `nami_test` ให้เอง
@@ -580,6 +620,7 @@ src/
 │  ├─ context.ts        upsert chat/user/group_member — จำ userId ทุกคนที่พูดในกลุ่ม
 │  ├─ groupGate.ts      กติกา "ตอบเฉพาะเมื่อถูกเรียก" ในกลุ่ม
 │  ├─ mentionResolve.ts จับคู่ชื่อที่ NLU ดึงมา → userId จาก group_members
+│  ├─ settings.ts       ตั้งค่าช่วงเวลาเงียบ (ปุ่มเมนู "ตั้งค่า")
 │  └─ lifecycle.ts      unfollow/leave → ปิดแชท หยุดยิง push
 ├─ worker/
 │  ├─ index.ts          เข้า worker process (3 worker)
@@ -597,14 +638,16 @@ src/
 │  ├─ nextOccurrence.ts คำนวณรอบถัดไป (floating date trick + quiet hours)
 │  ├─ fire.ts           claim → push → sent + กู้แถวค้าง
 │  └─ enqueue.ts        enqueue horizon 1 ชม. + sweeper + ลบ job ของแชทที่ปิด
-└─ vault/
-   ├─ storage.ts        S3 client (MinIO/R2) — upload/delete/signed URL
-   ├─ download.ts        ดาวน์โหลด content จาก LINE (ต้องทำก่อนไฟล์หมดอายุ)
-   ├─ mime.ts            เดา MIME จากชนิด message / นามสกุลไฟล์
-   ├─ quota.ts           โควตาพื้นที่เก็บ — สะสมตลอดกาล ไม่ใช่รายเดือน
-   ├─ service.ts         save/delete vault item + แนบ embedding
-   ├─ search.ts          hybrid search (tsvector + word_similarity + pgvector)
-   └─ urls.ts            ดึง URL จากข้อความด้วย regex (ไม่ผ่าน LLM)
+├─ vault/
+│  ├─ storage.ts        S3 client (MinIO/R2) — upload/delete/signed URL
+│  ├─ download.ts       ดาวน์โหลด content จาก LINE (ต้องทำก่อนไฟล์หมดอายุ)
+│  ├─ mime.ts           เดา MIME จากชนิด message / นามสกุลไฟล์
+│  ├─ quota.ts          โควตาพื้นที่เก็บ — สะสมตลอดกาล ไม่ใช่รายเดือน
+│  ├─ service.ts        save/delete vault item + แนบ embedding
+│  ├─ search.ts         hybrid search (tsvector + word_similarity + pgvector)
+│  └─ urls.ts           ดึง URL จากข้อความด้วย regex (ไม่ผ่าน LLM)
+├─ richmenu/build.ts    สร้าง RichMenuRequest (2×2, 4 ปุ่ม, postback ล้วน)
+└─ copy.ts              ข้อความที่ซ้ำกันหลายจุด (แก้คำที่เดียวตรงกันทุกจุด)
 ```
 
 ---
@@ -722,3 +765,6 @@ npm run db:verify
 | นามิถามคำถามที่ไม่เกี่ยวข้อง (เช่นถาม "กี่โมง" ตอนขอเก็บลิงก์) | โมเดลใส่ `ambiguousFields` มาแม้ intent จะไม่ใช่ `create_reminder` — `sanitizeNluResult()` ต้องกรองออก ดูหัวข้อ "ambiguousFields เป็นเรื่องของการตั้งเตือนเท่านั้น" |
 | มอบหมายคนในกลุ่มแล้วนามิบอกว่าไม่รู้จัก | คนนั้นต้องเคยพิมพ์ในกลุ่มมาก่อน (นามิรู้จักจาก `group_members` เท่านั้น) และชื่อต้องไม่ซ้ำ/กำกวมกับคนอื่นในกลุ่ม |
 | ยิงเตือนแล้วไม่มี @mention ทั้งที่ตอนตั้งเตือนบอกว่ารู้จักคนนั้น | ปกติถ้า push พร้อม mention พลาด (เช่นคนนั้นออกจากกลุ่มไปแล้ว) — `fireOccurrence()` จะ fallback ส่งแค่ Flex แทนอัตโนมัติ ดู log หา `"push พร้อม mention พลาด"` |
+| กด rich menu ในกลุ่มไม่เห็นเมนู | ตั้งใจ — ข้อจำกัดของ LINE: rich menu โผล่เฉพาะแชท 1:1 เท่านั้น |
+| `npm run richmenu:setup` หา Chrome ไม่เจอ | ติดตั้ง Google Chrome หรือ Chromium หรือแก้ `CHROME_CANDIDATES` ใน `scripts/setup-richmenu.ts` ให้ตรงกับ path จริง |
+| รันเมนู setup ซ้ำแล้วมีเมนูซ้ำค้างใน LINE Developers Console | ไม่ควรเกิด — สคริปต์ลบของเก่าชื่อเดียวกัน (`RICHMENU_NAME`) ก่อนสร้างใหม่เสมอ ถ้าเจอให้เช็คว่าไม่ได้แก้ `RICHMENU_NAME` เป็นคนละค่าระหว่างรัน |

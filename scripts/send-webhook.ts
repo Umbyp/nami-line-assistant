@@ -6,6 +6,8 @@
  *   npm run webhook:send -- --group "นามิ เตือนส่งรายงานทุกศุกร์"
  *   npm run webhook:send -- --follow
  *   npm run webhook:send -- --bad-signature "ทดสอบ"    (ต้องได้ 401)
+ *   npm run webhook:send -- --postback '{"a":"rm.list"}'
+ *   npm run webhook:send -- --postback '{"a":"settings.quiet_start"}' --params '{"time":"23:00"}'
  */
 import crypto from 'node:crypto';
 
@@ -16,7 +18,19 @@ const argv = process.argv.slice(2);
 const isGroup = argv.includes('--group');
 const isFollow = argv.includes('--follow');
 const badSignature = argv.includes('--bad-signature');
-const text = argv.filter((a) => !a.startsWith('--')).join(' ') || 'สวัสดีนามิ';
+
+/** อ่านค่าของ flag ที่ตามด้วยอาร์กิวเมนต์ เช่น --postback '{"a":"rm.list"}' */
+function flagValue(flag: string): string | undefined {
+  const i = argv.indexOf(flag);
+  return i >= 0 ? argv[i + 1] : undefined;
+}
+
+const postbackData = flagValue('--postback');
+const postbackParams = flagValue('--params');
+
+const text = argv
+  .filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--postback' && argv[i - 1] !== '--params')
+  .join(' ') || 'สวัสดีนามิ';
 
 const USER_ID = process.env.TEST_USER_ID ?? 'Utest0000000000000000000000000001';
 const GROUP_ID = process.env.TEST_GROUP_ID ?? 'Ctest0000000000000000000000000001';
@@ -38,16 +52,30 @@ const event = isFollow
       deliveryContext: { isRedelivery: false },
       replyToken: crypto.randomBytes(16).toString('hex'),
     }
-  : {
-      type: 'message',
-      mode: 'active',
-      timestamp: now,
-      source,
-      webhookEventId: eventId,
-      deliveryContext: { isRedelivery: false },
-      replyToken: crypto.randomBytes(16).toString('hex'),
-      message: { type: 'text', id: String(now), text },
-    };
+  : postbackData
+    ? {
+        type: 'postback',
+        mode: 'active',
+        timestamp: now,
+        source,
+        webhookEventId: eventId,
+        deliveryContext: { isRedelivery: false },
+        replyToken: crypto.randomBytes(16).toString('hex'),
+        postback: {
+          data: postbackData,
+          ...(postbackParams ? { params: JSON.parse(postbackParams) } : {}),
+        },
+      }
+    : {
+        type: 'message',
+        mode: 'active',
+        timestamp: now,
+        source,
+        webhookEventId: eventId,
+        deliveryContext: { isRedelivery: false },
+        replyToken: crypto.randomBytes(16).toString('hex'),
+        message: { type: 'text', id: String(now), text },
+      };
 
 const body = JSON.stringify({ destination: 'Uffffffffffffffffffffffffffffffff', events: [event] });
 
@@ -64,7 +92,8 @@ const res = await fetch(url, {
 
 console.log(`→ POST ${url}`);
 console.log(`   source: ${isGroup ? 'group' : 'user'}   event: ${event.type}`);
-if (!isFollow) console.log(`   text: ${text}`);
+if (event.type === 'message') console.log(`   text: ${text}`);
+if (event.type === 'postback') console.log(`   postback: ${postbackData}${postbackParams ? ` params: ${postbackParams}` : ''}`);
 console.log(`← ${res.status} ${res.statusText}`);
 console.log(`   ${await res.text()}`);
 

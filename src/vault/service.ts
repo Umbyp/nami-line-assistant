@@ -209,4 +209,38 @@ export async function deleteVaultItem(itemId: string, chatId: string): Promise<b
   return true;
 }
 
+/** ของที่เก็บล่าสุด — ใช้กับปุ่มเมนู "โน้ต-ไฟล์" (เรียกดูโดยไม่ต้องพิมพ์ค้นหา) */
+export async function listRecentVaultItems(chatId: string, limit = 10): Promise<VaultItem[]> {
+  return prisma.vaultItem.findMany({
+    where: { chatId },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+}
+
+/** แปลง VaultItem (จาก listRecentVaultItems) ให้เข้ากับ builder เดียวกับผลค้นหา */
+export function toSearchHit(item: VaultItem): {
+  id: string;
+  kind: VaultKind;
+  title: string | null;
+  contentText: string | null;
+  storageKey: string | null;
+  mime: string | null;
+  originalFileName: string | null;
+  createdAt: Date;
+  score: number;
+} {
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    contentText: item.contentText,
+    storageKey: item.storageKey,
+    mime: item.mime,
+    originalFileName: item.originalFileName,
+    createdAt: item.createdAt,
+    score: 0,
+  };
+}
+
 export { getVaultQuota, storageSoftLimitBytes } from './quota.js';

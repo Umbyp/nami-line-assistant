@@ -398,3 +398,85 @@ describe('vaultSearchResult', () => {
     expect(texts(imgBubble.contents.contents[0]).join(' ')).not.toContain('ไม่ควรโชว์');
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// P6: vaultSearchResult โหมด "ดูของล่าสุด" + settingsView
+// ─────────────────────────────────────────────────────────────
+import { settingsView } from '../src/line/flex/settingsView.js';
+import type { User } from '@prisma/client';
+
+describe('vaultSearchResult — โหมดดูของล่าสุด (query ว่าง)', () => {
+  it('ไม่มีของเก็บไว้เลย → ข้อความชวนส่งของมา ไม่ใช่ข้อความ "หาไม่เจอ"', () => {
+    const m = vaultSearchResult({ hits: [], query: '', tz: BKK, now: NOW });
+    expect(m.type).toBe('text');
+    if (m.type === 'text') {
+      expect(m.text).not.toContain('หา');
+      expect(m.text).toContain('ส่งรูป');
+    }
+  });
+
+  it('มีของ → altText บอกว่าเป็น "ของล่าสุด" ไม่ใช่ "เจอ N รายการ"', () => {
+    const m = vaultSearchResult({ hits: [fakeHit()], query: '', tz: BKK, now: NOW });
+    expect(m.type).toBe('flex');
+    if (m.type === 'flex') expect(m.altText).toContain('ล่าสุด');
+  });
+
+  it('มีคำค้น (query ไม่ว่าง) ยังใช้ข้อความค้นหาแบบเดิม', () => {
+    const empty = vaultSearchResult({ hits: [], query: 'ไดโนเสาร์', tz: BKK, now: NOW });
+    expect(empty.type).toBe('text');
+    if (empty.type === 'text') expect(empty.text).toContain('ไดโนเสาร์');
+  });
+});
+
+function fakeUser(over: Partial<User> = {}): User {
+  return {
+    lineUserId: 'U1',
+    displayName: 'ผู้ทดสอบ',
+    tz: 'Asia/Bangkok',
+    plan: 'free',
+    quietHoursStart: 1320,
+    quietHoursEnd: 420,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...over,
+  } as User;
+}
+
+describe('settingsView', () => {
+  it('แสดงแผนและช่วงเวลาเงียบปัจจุบัน', () => {
+    const m = settingsView(fakeUser());
+    const all = texts(m).join(' | ');
+    expect(all).toContain('Free');
+    expect(all).toContain('22:00');
+    expect(all).toContain('07:00');
+  });
+
+  it('มีปุ่มปรับเวลาเริ่ม/สิ้นสุด + ปิดช่วงเวลาเงียบ เมื่อเปิดใช้งานอยู่', () => {
+    const m = settingsView(fakeUser()) as any;
+    const buttons = footerButtons({ contents: m.contents });
+    const labels = buttons.map((b: any) => b.action.label);
+    expect(labels).toEqual(['ปรับเวลาเริ่ม', 'ปรับเวลาสิ้นสุด', 'ปิดช่วงเวลาเงียบ']);
+    expect(buttons[0].action.type).toBe('datetimepicker');
+    expect(buttons[0].action.mode).toBe('time');
+  });
+
+  it('ปิดช่วงเวลาเงียบอยู่ (start === end) → แสดง "ปิดอยู่" และมีแค่ปุ่มเปิด', () => {
+    const m = settingsView(fakeUser({ quietHoursStart: 0, quietHoursEnd: 0 })) as any;
+    expect(texts(m).join(' | ')).toContain('ปิดอยู่');
+    const buttons = footerButtons({ contents: m.contents });
+    expect(buttons.map((b: any) => b.action.label)).toEqual(['เปิดช่วงเวลาเงียบ']);
+    expect(buttons[0].action.data).toContain('quiet_on');
+  });
+
+  it('แผน pro แสดง "Pro"', () => {
+    const m = settingsView(fakeUser({ plan: 'pro' }));
+    expect(texts(m).join(' | ')).toContain('Pro');
+  });
+
+  it('ปุ่มปรับเวลาตั้งค่า initial ตรงกับเวลาปัจจุบัน', () => {
+    const m = settingsView(fakeUser({ quietHoursStart: 90, quietHoursEnd: 600 })) as any;
+    const buttons = footerButtons({ contents: m.contents });
+    expect(buttons[0].action.initial).toBe('01:30');
+    expect(buttons[1].action.initial).toBe('10:00');
+  });
+});

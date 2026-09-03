@@ -25,6 +25,18 @@ export const PostbackSchema = z.discriminatedUnion('a', [
   z.object({ a: z.literal('rm.list') }),
   /** ขอไฟล์/รูปจาก vault กลับมาในแชท */
   z.object({ a: z.literal('vault.send'), id: z.string().uuid() }),
+  /** ดูของที่เก็บไว้ล่าสุด (ปุ่มเมนู "โน้ต-ไฟล์") */
+  z.object({ a: z.literal('vault.list') }),
+  /** เปิดหน้าตั้งค่า (ปุ่มเมนู "ตั้งค่า") */
+  z.object({ a: z.literal('settings.view') }),
+  /** ปรับเวลาเริ่มช่วงเงียบ — ค่าที่เลือกอยู่ใน postback.params.time */
+  z.object({ a: z.literal('settings.quiet_start') }),
+  /** ปรับเวลาสิ้นสุดช่วงเงียบ — ค่าที่เลือกอยู่ใน postback.params.time */
+  z.object({ a: z.literal('settings.quiet_end') }),
+  /** ปิดช่วงเวลาเงียบทั้งหมด */
+  z.object({ a: z.literal('settings.quiet_off') }),
+  /** เปิดช่วงเวลาเงียบกลับมาด้วยค่าดีฟอลต์ */
+  z.object({ a: z.literal('settings.quiet_on') }),
   /** ช่วยเหลือ */
   z.object({ a: z.literal('help') }),
 ]);

@@ -22,7 +22,8 @@
     "webhook:send": "tsx scripts/send-webhook.ts",
     "db:verify": "tsx scripts/db-verify.ts",
     "llm:bench": "tsx scripts/llm-bench.ts",
-    "nlu:probe": "tsx scripts/probe-time.ts"
+    "nlu:probe": "tsx scripts/probe-time.ts",
+    "richmenu:setup": "tsx scripts/setup-richmenu.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",

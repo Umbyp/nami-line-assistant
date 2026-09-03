@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 2500px; height: 1686px;
+    font-family: "Sarabun", "Thonburi", "Helvetica", sans-serif;
+    background: #F4F1EC;
+    overflow: hidden;
+  }
+  .grid {
+    width: 2500px; height: 1686px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 6px;
+    background: #E3E8E5;
+  }
+  .cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+  }
+  .cell .icon { font-size: 150px; line-height: 1; }
+  .cell .label { font-size: 68px; font-weight: 700; }
+  .cell .sub { font-size: 30px; font-weight: 400; opacity: 0.85; margin-top: -6px; }
+
+  .reminders { background: #2F6F4F; color: #FFFFFF; }
+  .vault      { background: #3E8763; color: #FFFFFF; }
+  .settings   { background: #E8F1EC; color: #1F2A24; }
+  .help       { background: #FFFFFF; color: #1F2A24; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="cell reminders">
+      <div class="icon">⏰</div>
+      <div class="label">แจ้งเตือน</div>
+      <div class="sub">ดูรายการที่ตั้งไว้</div>
+    </div>
+    <div class="cell vault">
+      <div class="icon">🗂️</div>
+      <div class="label">โน้ต · ไฟล์</div>
+      <div class="sub">ของที่เก็บไว้</div>
+    </div>
+    <div class="cell settings">
+      <div class="icon">⚙️</div>
+      <div class="label">ตั้งค่า</div>
+      <div class="sub">ช่วงเวลาเงียบ</div>
+    </div>
+    <div class="cell help">
+      <div class="icon">💬</div>
+      <div class="label">ช่วยเหลือ</div>
+      <div class="sub">วิธีใช้นามิ</div>
+    </div>
+  </div>
+</body>
+</html>
