@@ -35,7 +35,7 @@ export function settingsView(user: User): messagingApi.FlexMessage {
     },
     {
       type: 'text',
-      text: 'ช่วงเวลาเงียบ: การเตือนซ้ำที่ตกในช่วงนี้จะถูกเลื่อนไปตอนสิ้นสุดช่วงแทน',
+      text: 'ช่วงเวลาเงียบ: การเตือนซ้ำที่ตกในช่วงนี้จะถูกเลื่อนไปตอนสิ้นสุดช่วงแทนนะคะ',
       size: SIZE.label,
       color: T.inkFaint,
       wrap: true,
