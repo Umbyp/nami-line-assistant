@@ -118,6 +118,6 @@ export function clarificationText(result: NluResult): string {
   };
   const asked = result.ambiguousFields.map((f) => labels[f] ?? f);
 
-  if (asked.length === 0) return 'นามิยังไม่ค่อยแน่ใจ บอกอีกทีได้ไหม';
-  return `ขอถามอีกหน่อย ${asked.join(' และ ')} ดี`;
+  if (asked.length === 0) return 'นามิยังไม่ค่อยแน่ใจค่ะ บอกอีกทีได้ไหมคะ';
+  return `ขอถามอีกหน่อยนะคะ ${asked.join(' และ ')} ดีคะ`;
 }

@@ -28,7 +28,7 @@ export function buildMentionMessage(
 
   return {
     type: 'textV2',
-    text: `${placeholders.join(' ')} ⏰ ถึงเวลา${title}แล้วนะ`,
+    text: `${placeholders.join(' ')} ⏰ ถึงเวลา${title}แล้วนะคะ`,
     substitution,
   };
 }

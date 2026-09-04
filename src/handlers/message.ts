@@ -76,7 +76,7 @@ async function handleTextMessage(
 
   // ถูกเรียกแต่ไม่มีเนื้อความ (พิมพ์ "นามิ" เฉยๆ)
   if (gate.cleanedText === '') {
-    await reply(replyToken, [textMessage('ว่าไงจ๊ะ บอกนามิได้เลย')]);
+    await reply(replyToken, [textMessage('ว่าไงคะ บอกนามิได้เลยค่ะ')]);
     return;
   }
 
@@ -96,8 +96,8 @@ async function handleTextMessage(
     await reply(replyToken, [
       textMessage(
         nlu.reason === 'not_configured'
-          ? 'นามิยังต่อสมองไม่ได้ (ยังไม่ได้ตั้ง OPENROUTER_API_KEY)'
-          : 'นามิอ่านไม่ออกแฮะ ลองพิมพ์อีกทีได้ไหม เช่น "เตือนกินยา 18.00"',
+          ? 'นามิยังต่อสมองไม่ได้ค่ะ (ยังไม่ได้ตั้ง OPENROUTER_API_KEY)'
+          : 'นามิอ่านไม่ออกค่ะ ลองพิมพ์อีกทีได้ไหมคะ เช่น "เตือนกินยา 18.00"',
       ),
     ]);
     return;
@@ -129,13 +129,13 @@ async function handleTextMessage(
       return;
 
     case 'smalltalk':
-      await reply(replyToken, [textMessage('สวัสดีจ้า มีอะไรให้นามิช่วยบอกได้เลย')]);
+      await reply(replyToken, [textMessage('สวัสดีค่ะ มีอะไรให้นามิช่วยบอกได้เลยนะคะ')]);
       return;
 
     case 'cancel_reminder':
       // ยังแยกไม่ได้ว่าจะยกเลิกอันไหนจากข้อความล้วน → โชว์รายการให้กดลบ
       // ส่งข้อความนำกับรายการไปใน reply เดียว เพราะ replyToken ใช้ได้ครั้งเดียว
-      await replyWithList(replyToken, ctx, 'อันไหนดี กดปุ่มลบในรายการได้เลย');
+      await replyWithList(replyToken, ctx, 'อันไหนดีคะ กดปุ่มลบในรายการได้เลยนะคะ');
       return;
 
     case 'search_vault':
@@ -148,7 +148,7 @@ async function handleTextMessage(
 
     default:
       await reply(replyToken, [
-        textMessage('นามิยังไม่เข้าใจว่าต้องการอะไร พิมพ์ "ช่วยเหลือ" ดูตัวอย่างได้'),
+        textMessage('นามิยังไม่เข้าใจว่าต้องการอะไรค่ะ พิมพ์ "ช่วยเหลือ" ดูตัวอย่างได้นะคะ'),
       ]);
   }
 }
@@ -183,7 +183,7 @@ async function handleSearchVault(
 ): Promise<void> {
   const query = (r.searchQuery ?? '').trim();
   if (query === '') {
-    await reply(replyToken, [textMessage('อยากให้หาอะไรดี ลองบอกคำที่จำได้ดู')]);
+    await reply(replyToken, [textMessage('อยากให้หาอะไรดีคะ ลองบอกคำที่จำได้ดูนะคะ')]);
     return;
   }
 
@@ -205,7 +205,7 @@ async function handleSaveToVault(
   // ไม่ต้องเก็บซ้ำเป็น text อีกรายการ
   const urls = extractUrls(text);
   if (urls.length === 1 && urls[0] === text.trim()) {
-    await reply(replyToken, [textMessage('เก็บลิงก์ไว้ให้แล้วนะ ค้นหาทีหลังได้เลย')]);
+    await reply(replyToken, [textMessage('เก็บลิงก์ไว้ให้แล้วนะคะ ค้นหาทีหลังได้เลยค่ะ')]);
     return;
   }
 
@@ -216,7 +216,7 @@ async function handleSaveToVault(
     await reply(replyToken, [textMessage(vaultFailureText(out))]);
     return;
   }
-  await reply(replyToken, [textMessage('จำไว้ให้แล้วนะ ค้นหาทีหลังได้เลย')]);
+  await reply(replyToken, [textMessage('จำไว้ให้แล้วนะคะ ค้นหาทีหลังได้เลยค่ะ')]);
 }
 
 async function handleMediaMessage(
@@ -260,7 +260,7 @@ async function handleMediaMessage(
     if (reviewed) return;
   }
 
-  await reply(replyToken, [textMessage(`เก็บ${isFile ? 'ไฟล์' : 'รูป'}ไว้ให้แล้วนะ ค้นหาทีหลังได้เลย`)]);
+  await reply(replyToken, [textMessage(`เก็บ${isFile ? 'ไฟล์' : 'รูป'}ไว้ให้แล้วนะคะ ค้นหาทีหลังได้เลยค่ะ`)]);
 }
 
 /**
@@ -310,9 +310,9 @@ function vaultFailureText(out: { reason: string; usedBytes?: number; limitBytes?
   if (out.reason === 'quota_exceeded') {
     const usedMb = Math.round((out.usedBytes ?? 0) / 1024 / 1024);
     const limitMb = Math.round((out.limitBytes ?? 0) / 1024 / 1024);
-    return `พื้นที่เก็บของเต็มแล้ว (${usedMb}/${limitMb} MB) ลบของเก่าออกก่อนนะ`;
+    return `พื้นที่เก็บของเต็มแล้วค่ะ (${usedMb}/${limitMb} MB) ลบของเก่าออกก่อนนะคะ`;
   }
-  return 'เก็บของไม่สำเร็จ ลองใหม่อีกทีนะ';
+  return 'เก็บของไม่สำเร็จค่ะ ลองใหม่อีกทีนะคะ';
 }
 
 async function handleCreateReminder(
@@ -324,7 +324,7 @@ async function handleCreateReminder(
 ): Promise<void> {
   const draft = r.reminder;
   if (!draft) {
-    await reply(replyToken, [textMessage('นามิจับไม่ได้ว่าจะเตือนเรื่องอะไร บอกอีกทีได้ไหม')]);
+    await reply(replyToken, [textMessage('นามิจับไม่ได้ว่าจะเตือนเรื่องอะไรค่ะ บอกอีกทีได้ไหมคะ')]);
     return;
   }
 
@@ -451,7 +451,7 @@ async function handleCreateRecurring(
 
   // ต้องรู้เวลาที่จะเตือนในแต่ละรอบ ไม่งั้นเดาไม่ได้ (ยกเว้นแบบทุก N นาที)
   if (fire.minute == null && !draft.everyMinutes) {
-    await reply(replyToken, [textMessage('ให้เตือนกี่โมงดี')]);
+    await reply(replyToken, [textMessage('ให้เตือนกี่โมงดีคะ')]);
     return;
   }
 
@@ -478,7 +478,7 @@ async function handleCreateRecurring(
   if (!out.ok) {
     logger.warn({ reason: out.reason, rrule: draft.rrule }, 'สร้างการเตือนซ้ำไม่สำเร็จ');
     await reply(replyToken, [
-      textMessage('นามิยังจับไม่ได้ว่าให้เตือนซ้ำแบบไหน ลองบอกแบบนี้ได้ไหม "ทุกวันจันทร์ 8 โมง"'),
+      textMessage('นามิยังจับไม่ได้ว่าให้เตือนซ้ำแบบไหนค่ะ ลองบอกแบบนี้ได้ไหมคะ "ทุกวันจันทร์ 8 โมง"'),
     ]);
     return;
   }
@@ -515,19 +515,19 @@ async function memberNames(chatId: string): Promise<string[]> {
 function dueFailureText(reason: string): string {
   switch (reason) {
     case 'past_explicit_date':
-      return 'วันที่บอกมาผ่านไปแล้วนะ ต้องการวันไหนดี';
+      return 'วันที่บอกมาผ่านไปแล้วนะคะ ต้องการวันไหนดีคะ';
     case 'too_far':
-      return 'เวลาที่ได้ดูไกลเกินไป ลองบอกวันเวลาอีกทีได้ไหม';
+      return 'เวลาที่ได้ดูไกลเกินไปค่ะ ลองบอกวันเวลาอีกทีได้ไหมคะ';
     case 'missing':
-      return 'ยังไม่ได้บอกเวลานะ ให้เตือนกี่โมงดี';
+      return 'ยังไม่ได้บอกเวลานะคะ ให้เตือนกี่โมงดีคะ';
     default:
-      return 'นามิอ่านเวลาไม่ออกแฮะ ลองบอกแบบนี้ได้ไหม "พรุ่งนี้ 9 โมง" หรือ "18.00"';
+      return 'นามิอ่านเวลาไม่ออกค่ะ ลองบอกแบบนี้ได้ไหมคะ "พรุ่งนี้ 9 โมง" หรือ "18.00"';
   }
 }
 
 export function helpText(isGroup: boolean): string {
   const lines = [
-    'นามิทำอะไรได้บ้าง 👋',
+    'นามิทำอะไรได้บ้างคะ 👋',
     '',
     'ตั้งเตือน — พิมพ์บอกเหมือนบอกเพื่อน',
     '• "เตือนกินยาหลังอาหารเย็น 18.00"',
@@ -541,14 +541,14 @@ export function helpText(isGroup: boolean): string {
     '',
     'ดูรายการ — "มีเตือนอะไรบ้าง" (มีปุ่มแก้เวลา/ลบให้)',
     '',
-    'เก็บของไม่มีวันหมดอายุ — ส่งรูป ไฟล์ หรือลิงก์มาได้เลย',
+    'เก็บของไม่มีวันหมดอายุ — ส่งรูป ไฟล์ หรือลิงก์มาได้เลยค่ะ',
     '• "หาไฟล์สัญญาที่ส่งเมื่อเดือนก่อน"',
     '• "จำไว้ด้วยว่าโค้ดส่วนลดคือ SAVE20"',
     '',
-    'กำลังทำอยู่: อ่านรูปตารางเรียน/ใบนัดแล้วตั้งเตือนให้อัตโนมัติ',
+    'ส่งรูปใบนัดหมอ ตารางเรียน หรือตารางเวรมาได้เลยค่ะ นามิจะอ่านแล้วเสนอรายการเตือนให้ยืนยัน',
   ];
   if (isGroup) {
-    lines.push('', 'ในกลุ่ม เรียกนามิด้วย @นามิ หรือขึ้นต้นข้อความด้วย "นามิ" นะ');
+    lines.push('', 'ในกลุ่ม เรียกนามิด้วย @นามิ หรือขึ้นต้นข้อความด้วย "นามิ" นะคะ');
   }
   return lines.join('\n');
 }

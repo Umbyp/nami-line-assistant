@@ -23,7 +23,7 @@ export function imageReminderReview(draft: ReminderDraft): messagingApi.FlexMess
   const body: messagingApi.FlexComponent[] = [
     {
       type: 'text',
-      text: `📷 เจอ ${ok.length} รายการที่ควรตั้งเตือน`,
+      text: `📷 เจอ ${ok.length} รายการที่ควรตั้งเตือนค่ะ`,
       weight: 'bold',
       size: SIZE.title,
       color: T.ink,
@@ -57,14 +57,14 @@ export function imageReminderReview(draft: ReminderDraft): messagingApi.FlexMess
   if (failed.length > 0) {
     body.push(
       notice(
-        `อ่านไม่ออก ${failed.length} รายการ: ${failed.map((f) => f.problem).join(' · ')}`,
+        `อ่านไม่ออก ${failed.length} รายการค่ะ: ${failed.map((f) => f.problem).join(' · ')}`,
         T.warn,
       ),
     );
   }
 
   if (unclearNotes.length > 0) {
-    body.push(notice(`จุดที่ไม่มั่นใจ: ${unclearNotes.join(' · ')} — ตรวจสอบก่อนใช้จริงนะ`, T.warn));
+    body.push(notice(`จุดที่ไม่มั่นใจ: ${unclearNotes.join(' · ')} — ตรวจสอบก่อนใช้จริงนะคะ`, T.warn));
   }
 
   const footer: messagingApi.FlexComponent[] =
@@ -112,8 +112,8 @@ export function imageReminderReview(draft: ReminderDraft): messagingApi.FlexMess
     type: 'flex',
     altText:
       ok.length > 0
-        ? `เจอ ${ok.length} รายการที่ควรตั้งเตือนจากรูป กดยืนยันเพื่อบันทึก`
-        : 'อ่านรูปแล้วแต่ยังไม่แน่ใจว่าควรตั้งเตือนอะไร',
+        ? `เจอ ${ok.length} รายการที่ควรตั้งเตือนจากรูปค่ะ กดยืนยันเพื่อบันทึกนะคะ`
+        : 'อ่านรูปแล้วแต่ยังไม่แน่ใจว่าควรตั้งเตือนอะไรค่ะ',
     contents: {
       type: 'bubble',
       body: { type: 'box', layout: 'vertical', paddingAll: 'lg', contents: body },

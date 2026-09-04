@@ -78,13 +78,13 @@ export function reminderConfirm(input: ReminderConfirmInput): messagingApi.FlexM
 
   // บอกตรงๆ ว่าเราเลื่อนวันให้ เพราะเวลาที่ขอผ่านไปแล้ว — ไม่เงียบแล้วให้ผู้ใช้เซอร์ไพรส์
   if (input.shiftedDays && input.shiftedDays > 0) {
-    bodyContents.push(notice(`เวลาที่บอกผ่านไปแล้ววันนี้ นามิจึงตั้งเป็นวันถัดไปให้`, T.warn));
+    bodyContents.push(notice(`เวลาที่บอกผ่านไปแล้ววันนี้ นามิจึงตั้งเป็นวันถัดไปให้ค่ะ`, T.warn));
   }
 
   // เลื่อนเพราะช่วงเวลาเงียบ — ต้องบอก ไม่งั้นผู้ใช้จะสงสัยว่าทำไมเตือนไม่ตรงเวลาที่สั่ง
   if (input.quietHoursShifted) {
     bodyContents.push(
-      notice('เวลาที่ตั้งตกในช่วงเวลาเงียบ นามิจึงเลื่อนไปเตือนตอนออกจากช่วงเงียบให้', T.warn),
+      notice('เวลาที่ตั้งตกในช่วงเวลาเงียบ นามิจึงเลื่อนไปเตือนตอนออกจากช่วงเงียบให้ค่ะ', T.warn),
     );
   }
 
@@ -92,7 +92,7 @@ export function reminderConfirm(input: ReminderConfirmInput): messagingApi.FlexM
     bodyContents.push(
       notice(
         `นามิยังไม่รู้จัก ${input.unknownAssignees.join(', ')} ` +
-          'ให้คนนั้นพิมพ์ในกลุ่มครั้งนึงก่อนนะ นามิจะจำไว้',
+          'ให้คนนั้นพิมพ์ในกลุ่มครั้งนึงก่อนนะคะ นามิจะจำไว้ค่ะ',
         T.warn,
       ),
     );
@@ -101,8 +101,8 @@ export function reminderConfirm(input: ReminderConfirmInput): messagingApi.FlexM
   return {
     type: 'flex',
     altText: input.recurrenceLabel
-      ? `ตั้งเตือนแล้ว: ${input.title} — ${input.recurrenceLabel}`
-      : `ตั้งเตือนแล้ว: ${input.title} — ${friendly}`,
+      ? `ตั้งเตือนแล้วค่ะ: ${input.title} — ${input.recurrenceLabel}`
+      : `ตั้งเตือนแล้วค่ะ: ${input.title} — ${friendly}`,
     contents: {
       type: 'bubble',
       header: {
@@ -113,7 +113,7 @@ export function reminderConfirm(input: ReminderConfirmInput): messagingApi.FlexM
         contents: [
           {
             type: 'text',
-            text: 'ตั้งเตือนให้แล้ว',
+            text: 'ตั้งเตือนให้แล้วค่ะ',
             color: T.white,
             weight: 'bold',
             size: SIZE.body,

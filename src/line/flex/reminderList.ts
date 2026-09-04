@@ -30,7 +30,7 @@ export function reminderList(input: ReminderListInput): messagingApi.Message {
   const items = input.reminders.slice(0, LIST_MAX);
 
   if (items.length === 0) {
-    return { type: 'text', text: 'ยังไม่มีการเตือนที่ตั้งไว้เลย ลองพิมพ์ "เตือนกินยา 18.00" ดู' };
+    return { type: 'text', text: 'ยังไม่มีการเตือนที่ตั้งไว้เลยค่ะ ลองพิมพ์ "เตือนกินยา 18.00" ดูนะคะ' };
   }
 
   const total = input.total ?? input.reminders.length;

@@ -89,7 +89,7 @@ export function reminderFire(input: ReminderFireInput): messagingApi.FlexMessage
         backgroundColor: T.brand,
         paddingAll: 'md',
         contents: [
-          { type: 'text', text: '⏰ ถึงเวลาแล้ว', color: T.white, weight: 'bold', size: SIZE.body },
+          { type: 'text', text: '⏰ ถึงเวลาแล้วค่ะ', color: T.white, weight: 'bold', size: SIZE.body },
         ],
       },
       body: { type: 'box', layout: 'vertical', paddingAll: 'lg', contents: body },

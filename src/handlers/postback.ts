@@ -42,7 +42,7 @@ export async function handlePostbackEvent(
   if (!decoded.ok) {
     logger.warn({ detail: decoded.detail }, 'postback อ่านไม่ได้');
     if (replyToken) {
-      await reply(replyToken, [textMessage('ปุ่มนี้ใช้ไม่ได้แล้ว ลองตั้งเตือนใหม่นะ')]);
+      await reply(replyToken, [textMessage('ปุ่มนี้ใช้ไม่ได้แล้วค่ะ ลองตั้งเตือนใหม่นะคะ')]);
     }
     return;
   }
@@ -58,7 +58,7 @@ export async function handlePostbackEvent(
       const r = await cancelReminder(action.id, ctx.chat.id);
       if (!replyToken) return;
       await reply(replyToken, [
-        textMessage(r ? `ปิดการเตือน "${r.title}" แล้ว ไม่เตือนอีกนะ` : REMINDER_NOT_FOUND),
+        textMessage(r ? `ปิดการเตือน "${r.title}" แล้วค่ะ ไม่เตือนอีกนะคะ` : REMINDER_NOT_FOUND),
       ]);
       return;
     }
@@ -69,14 +69,14 @@ export async function handlePostbackEvent(
 
       if (!raw) {
         logger.warn({ params: event.postback?.params }, 'datetimepicker ส่งค่ามาผิดรูป');
-        if (replyToken) await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จ ลองกดอีกทีนะ')]);
+        if (replyToken) await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จค่ะ ลองกดอีกทีนะคะ')]);
         return;
       }
 
       // datetimepicker ส่งเวลามาแบบไม่มี timezone — ตีความเป็นเวลาไทย
       const local = DateTime.fromISO(raw, { zone: env.APP_TIMEZONE });
       if (!local.isValid) {
-        if (replyToken) await reply(replyToken, [textMessage('เวลาที่เลือกใช้ไม่ได้ ลองอีกทีนะ')]);
+        if (replyToken) await reply(replyToken, [textMessage('เวลาที่เลือกใช้ไม่ได้ค่ะ ลองอีกทีนะคะ')]);
         return;
       }
 
@@ -85,7 +85,7 @@ export async function handlePostbackEvent(
       // min ของ picker กันไว้แล้ว แต่เครื่องผู้ใช้อาจเวลาเพี้ยน — เช็คอีกชั้น
       if (newDue.getTime() <= Date.now()) {
         if (replyToken) {
-          await reply(replyToken, [textMessage('เวลาที่เลือกผ่านมาแล้ว เลือกเวลาข้างหน้านะ')]);
+          await reply(replyToken, [textMessage('เวลาที่เลือกผ่านมาแล้วค่ะ เลือกเวลาข้างหน้านะคะ')]);
         }
         return;
       }
@@ -124,8 +124,8 @@ export async function handlePostbackEvent(
       await reply(replyToken, [
         textMessage(
           out.wasRecurring
-            ? `เก่งมาก 👍 รอบถัดไปนามิจะเตือนอีกนะ`
-            : `เยี่ยม 👍 "${out.reminder.title}" เสร็จแล้ว`,
+            ? `เก่งมากค่ะ 👍 รอบถัดไปนามิจะเตือนอีกนะคะ`
+            : `เยี่ยมค่ะ 👍 "${out.reminder.title}" เสร็จแล้วค่ะ`,
         ),
       ]);
       return;
@@ -146,7 +146,7 @@ export async function handlePostbackEvent(
       );
 
       const when = formatThaiFriendly(out.occurrence.fireAtUtc, env.APP_TIMEZONE);
-      await reply(replyToken, [textMessage(`เลื่อนไปเตือน ${when} นะ`)]);
+      await reply(replyToken, [textMessage(`เลื่อนไปเตือน ${when} นะคะ`)]);
       return;
     }
 
@@ -171,7 +171,7 @@ export async function handlePostbackEvent(
         where: { id: action.id, chatId: ctx.chat.id },
       });
       if (!item || !item.storageKey) {
-        await reply(replyToken, [textMessage('ไม่เจอไฟล์นี้แล้วนะ อาจถูกลบไปแล้ว')]);
+        await reply(replyToken, [textMessage('ไม่เจอไฟล์นี้แล้วค่ะ อาจถูกลบไปแล้วนะคะ')]);
         return;
       }
 
@@ -224,7 +224,7 @@ export async function handlePostbackEvent(
       const minute = readPickerTime(event.postback?.params);
       if (minute === null) {
         logger.warn({ params: event.postback?.params }, 'datetimepicker (time) ส่งค่ามาผิดรูป');
-        await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จ ลองกดอีกทีนะ')]);
+        await reply(replyToken, [textMessage('เลือกเวลาไม่สำเร็จค่ะ ลองกดอีกทีนะคะ')]);
         return;
       }
       const field = action.a === 'settings.quiet_start' ? 'start' : 'end';
@@ -270,8 +270,8 @@ export async function handlePostbackEvent(
       await reply(replyToken, [
         textMessage(
           out.skipped > 0
-            ? `บันทึกแล้ว ${out.created.length} รายการ (อีก ${out.skipped} รายการสร้างไม่สำเร็จ)`
-            : `บันทึกแล้ว ${out.created.length} รายการ 👍`,
+            ? `บันทึกแล้ว ${out.created.length} รายการค่ะ (อีก ${out.skipped} รายการสร้างไม่สำเร็จนะคะ)`
+            : `บันทึกแล้ว ${out.created.length} รายการค่ะ 👍`,
         ),
       ]);
       return;
@@ -281,7 +281,7 @@ export async function handlePostbackEvent(
       if (!replyToken) return;
       const removed = await discardReminderDraft(action.id, ctx.chat.id);
       await reply(replyToken, [
-        textMessage(removed ? 'ไม่เก็บนะ ทิ้งแล้ว' : 'รายการนี้ถูกจัดการไปแล้ว'),
+        textMessage(removed ? 'ไม่เก็บนะคะ ทิ้งแล้วค่ะ' : 'รายการนี้ถูกจัดการไปแล้วค่ะ'),
       ]);
       return;
     }
@@ -310,7 +310,7 @@ export async function replyWithList(
   ];
 
   if (total > LIST_MAX) {
-    messages.push(textMessage(`แสดง ${LIST_MAX} รายการแรกจากทั้งหมด ${total} รายการนะ`));
+    messages.push(textMessage(`แสดง ${LIST_MAX} รายการแรกจากทั้งหมด ${total} รายการนะคะ`));
   }
 
   await reply(replyToken, messages);
@@ -346,10 +346,10 @@ function readPickerTime(params: unknown): number | null {
 function draftFailureText(reason: 'not_found' | 'expired' | 'already_handled'): string {
   switch (reason) {
     case 'expired':
-      return 'รูปนี้ผ่านมานานแล้ว ลองส่งรูปใหม่อีกทีนะ';
+      return 'รูปนี้ผ่านมานานแล้วค่ะ ลองส่งรูปใหม่อีกทีนะคะ';
     case 'already_handled':
-      return 'รายการนี้ถูกจัดการไปแล้ว';
+      return 'รายการนี้ถูกจัดการไปแล้วค่ะ';
     default:
-      return 'ไม่เจอรายการนี้แล้ว อาจถูกจัดการไปแล้ว';
+      return 'ไม่เจอรายการนี้แล้วค่ะ อาจถูกจัดการไปแล้วนะคะ';
   }
 }

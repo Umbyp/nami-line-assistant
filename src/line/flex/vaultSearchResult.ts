@@ -44,8 +44,8 @@ export function vaultSearchResult(input: VaultSearchResultInput): messagingApi.M
     return {
       type: 'text',
       text: isBrowsingRecent
-        ? 'ยังไม่มีของเก็บไว้เลย ส่งรูป ไฟล์ หรือลิงก์มาได้เลย นามิจะเก็บให้'
-        : `หา "${input.query}" ไม่เจอเลยนะ ลองคำอื่นดูไหม`,
+        ? 'ยังไม่มีของเก็บไว้เลยค่ะ ส่งรูป ไฟล์ หรือลิงก์มาได้เลย นามิจะเก็บให้นะคะ'
+        : `หา "${input.query}" ไม่เจอเลยค่ะ ลองคำอื่นดูไหมคะ`,
     };
   }
 
